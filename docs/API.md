@@ -8,6 +8,25 @@ See [ChartGPU.ts](../src/ChartGPU.ts) for the chart instance implementation.
 
 Creates a chart instance bound to a container element.
 
+### `ChartGPUInstance`
+
+Returned by `ChartGPU.create(...)`.
+
+See [ChartGPU.ts](../src/ChartGPU.ts) for the full interface and lifecycle behavior.
+
+**Properties (essential):**
+
+- `options: Readonly<ChartGPUOptions>`: the last user-provided options object (unresolved).
+- `disposed: boolean`
+
+**Methods (essential):**
+
+- `setOption(options: ChartGPUOptions): void`: replaces the current user options, resolves them against defaults via [`resolveOptions`](../src/config/OptionResolver.ts), updates internal render state, and schedules a single on-demand render on the next `requestAnimationFrame` tick (coalesces multiple calls).
+- `resize(): void`: recomputes the canvas backing size / WebGPU canvas configuration from the container size; if anything changes, schedules a render.
+- `dispose(): void`: cancels any pending frame, disposes internal render resources, destroys the WebGPU context, and removes the canvas.
+
+Data upload and scale/bounds derivation occur during [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts) `RenderCoordinator.render()` (not during `setOption(...)` itself).
+
 ### `ChartGPUOptions`
 
 Chart configuration options.

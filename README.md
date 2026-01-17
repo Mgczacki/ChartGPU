@@ -29,6 +29,10 @@ See [GPUContext implementation](src/core/GPUContext.ts) for details.
 
 See [ChartGPU.ts](src/ChartGPU.ts) for the implementation.
 
+Chart instances render on demand. `ChartGPU.create(...)` schedules an initial render on the next `requestAnimationFrame` tick. `instance.setOption(...)` and `instance.resize()` schedule a single on-demand render; multiple calls before the next frame are coalesced.
+
+`setOption(...)` resolves the provided options against defaults via [`resolveOptions`](src/config/OptionResolver.ts) and applies the resolved result to the internal render coordinator. The per-frame work (series data upload, bounds/extents, and clip-space scales) happens inside [`createRenderCoordinator.ts`](src/core/createRenderCoordinator.ts) during `RenderCoordinator.render()`.
+
 ### Options and defaults
 
 Options are defined by [`ChartGPUOptions`](src/config/types.ts). Baseline defaults live in [`defaultOptions`](src/config/defaults.ts).
