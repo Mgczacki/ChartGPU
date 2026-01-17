@@ -101,7 +101,7 @@ Now that you have a GPU context initialized, you can:
 
 See the [examples directory](../examples/) for complete working examples.
 
-The `hello-world` example demonstrates basic WebGPU pipeline usage. See [hello-world/main.ts](../examples/hello-world/main.ts) for implementation.
+The `hello-world` example demonstrates continuous rendering by animating the clear color through the full color spectrum, proving that the render loop is working correctly. See [hello-world/main.ts](../examples/hello-world/main.ts) for implementation.
 
 To run examples:
 

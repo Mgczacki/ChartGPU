@@ -77,7 +77,9 @@ Run `npm run dev` to start the development server. Navigate to `http://localhost
 
 ## Examples
 
-See the [examples directory](examples/) for complete working examples. The `hello-world` example demonstrates basic WebGPU pipeline usage.
+See the [examples directory](examples/) for complete working examples. The `hello-world` example demonstrates continuous rendering by animating the clear color through the full color spectrum.
+
+See [hello-world/main.ts](examples/hello-world/main.ts) for implementation.
 
 ## License
 
