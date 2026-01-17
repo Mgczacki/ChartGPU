@@ -1,121 +1,113 @@
 # API Reference
 
-## GPUContext
+## Functional API (Preferred)
 
-The `GPUContext` class provides a clean interface for initializing and managing WebGPU resources. It handles adapter selection, device creation, and resource cleanup following WebGPU best practices.
+The functional API provides a type-safe, immutable approach to managing WebGPU contexts.
 
 See [GPUContext.ts](../src/core/GPUContext.ts) for the complete implementation.
 
-### Constructor
+### `GPUContextState`
 
-Creates a new GPUContext instance. The context is not initialized until `initialize()` is called.
+Represents the state of a GPU context with readonly properties.
 
-### Static Methods
+### `createGPUContext(canvas?: HTMLCanvasElement): GPUContextState`
 
-#### `GPUContext.create()`
+Creates a new GPUContext state with initial values.
 
-Factory method that creates a new `GPUContext` instance and initializes it. This is the recommended way to create a GPUContext.
+### `createGPUContextAsync(canvas?: HTMLCanvasElement): Promise<GPUContextState>`
 
-**Returns:** Promise that resolves to a fully initialized `GPUContext` instance
+Creates and initializes a GPU context in one step. Recommended for most use cases.
 
-**Throws:** `Error` if initialization fails (see `initialize()` for error details)
+**Throws:** `Error` if initialization fails
+
+### `initializeGPUContext(context: GPUContextState): Promise<GPUContextState>`
+
+Initializes the WebGPU context by requesting an adapter and device. Returns a new state object.
+
+**Throws:** `Error` if WebGPU unavailable, adapter/device request fails, or already initialized
+
+### `getCanvasTexture(context: GPUContextState): GPUTexture`
+
+Gets the current texture from the canvas context.
+
+**Throws:** `Error` if canvas not configured or context not initialized
+
+### `destroyGPUContext(context: GPUContextState): GPUContextState`
+
+Destroys the WebGPU device and cleans up resources. Returns a new state object with reset values.
+
+## Class-Based API (Backward Compatibility)
+
+The `GPUContext` class provides a class-based interface that internally uses the functional implementation.
+
+See [GPUContext.ts](../src/core/GPUContext.ts) for the complete implementation.
+
+### `GPUContext.create(canvas?: HTMLCanvasElement): Promise<GPUContext>`
+
+Factory method that creates and initializes a GPUContext instance.
+
+**Throws:** `Error` if initialization fails
 
 ### Properties
 
-#### `adapter`
+- `adapter` - WebGPU adapter instance, or `null` if not initialized
+- `device` - WebGPU device instance, or `null` if not initialized
+- `initialized` - `true` if successfully initialized
+- `canvas` - Canvas element, or `null` if not provided
+- `canvasContext` - WebGPU canvas context, or `null` if not configured
+- `preferredFormat` - Preferred canvas format, or `null` if not configured
 
-Returns the WebGPU adapter instance, or `null` if the context has not been initialized.
+### Methods
 
-The adapter represents a physical GPU or software implementation and is used to request devices.
-
-#### `device`
-
-Returns the WebGPU device instance, or `null` if the context has not been initialized.
-
-The device is the primary interface for creating GPU resources like buffers, textures, and pipelines.
-
-#### `initialized`
-
-Returns `true` if the context has been successfully initialized, `false` otherwise.
-
-### Instance Methods
-
-#### `initialize()`
-
-Initializes the WebGPU context by:
-1. Checking for WebGPU availability (`navigator.gpu`)
-2. Requesting an adapter with `powerPreference: 'high-performance'`
-3. Requesting a device from the adapter
-4. Setting up error handlers
-
-**Returns:** Promise that resolves when initialization completes
-
-**Throws:**
-- `Error` - If WebGPU is not available in the browser. The error message includes guidance on supported browsers and enabling WebGPU.
-- `Error` - If adapter request fails (no compatible adapter found)
-- `Error` - If device request fails
-- `Error` - If the context is already initialized (call `destroy()` first)
-
-**Error Messages:**
-
-- **WebGPU not available:** "WebGPU is not available in this browser. Please use a browser that supports WebGPU (Chrome 113+, Edge 113+, or Safari 18+). Ensure WebGPU is enabled in browser flags if needed."
-
-- **Adapter request failed:** "Failed to request WebGPU adapter. No compatible adapter found. This may occur if no GPU is available or WebGPU is disabled."
-
-- **Device request failed:** "Failed to request WebGPU device from adapter."
-
-- **Already initialized:** "GPUContext is already initialized. Call destroy() before reinitializing."
-
-**Note:** The method automatically sets up an `uncapturederror` event listener on the device to log WebGPU errors to the console.
-
-#### `destroy()`
-
-Destroys the WebGPU device and cleans up all resources. After calling `destroy()`, the context must be reinitialized with `initialize()` before it can be used again.
-
-This method:
-- Calls `device.destroy()` if a device exists
-- Sets `adapter` and `device` to `null`
-- Resets the `initialized` flag to `false`
-
-**Note:** Errors during device destruction are caught and logged as warnings but do not throw.
+- `initialize(): Promise<void>` - Initializes the WebGPU context
+- `getCanvasTexture(): GPUTexture` - Gets the current canvas texture
+- `destroy(): void` - Destroys the device and cleans up resources
 
 ## Error Handling
 
-### WebGPU Availability Check
-
-Before initializing, check if WebGPU is available by verifying `navigator.gpu` exists. The `initialize()` method performs this check automatically and throws a descriptive error if WebGPU is unavailable.
-
-### Initialization Errors
-
-Wrap initialization in try-catch to handle errors gracefully. The error messages are descriptive and indicate the specific failure reason (WebGPU unavailable, adapter failure, device failure, or already initialized).
-
-### Device Lost Recovery
-
-The GPUContext automatically sets up error handlers for uncaptured errors. For additional recovery logic, you can listen to the device's `uncapturederror` event directly.
+All initialization functions throw descriptive errors if WebGPU is unavailable, adapter/device requests fail, or the context is already initialized. Wrap initialization in try-catch blocks.
 
 ## Best Practices
 
-### Resource Management
+Always call `destroyGPUContext()` (functional) or `destroy()` (class) when done with a GPU context. Use try-finally blocks to ensure cleanup.
 
-Always call `destroy()` when done with a GPUContext to free GPU resources. Use try-finally blocks to ensure cleanup even if errors occur.
+When providing a canvas element, the context automatically handles device pixel ratio and configures the canvas with the preferred format.
 
-### Singleton Pattern
+## RenderScheduler
 
-For applications that need a single GPU context throughout their lifetime, implement a singleton pattern that creates one context and reuses it.
+Manages a 60fps render loop using requestAnimationFrame with delta time tracking.
 
-### Adapter Selection
+See [RenderScheduler.ts](../src/core/RenderScheduler.ts) for the complete implementation.
 
-The GPUContext requests adapters with `powerPreference: 'high-performance'` by default. For power-sensitive applications, you may want to modify the implementation to use `'low-power'` or allow configuration.
+### `RenderCallback`
+
+Callback function type that receives delta time in milliseconds since the last frame.
+
+### `RenderScheduler`
+
+Class that manages the render loop lifecycle.
+
+### `start(callback: RenderCallback): void`
+
+Begins the requestAnimationFrame loop. Callback receives delta time in milliseconds.
+
+**Throws:** `Error` if callback not provided or scheduler already running
+
+### `stop(): void`
+
+Stops the render loop and cancels pending frames.
+
+### `requestRender(): void`
+
+Marks frame as dirty for future optimization. Currently unused but prepared for frame-skipping.
+
+### `running: boolean`
+
+Getter that returns `true` if the scheduler is currently running.
 
 ## Type Definitions
 
-All WebGPU types are provided by `@webgpu/types`. The GPUContext uses:
-
-- `GPUAdapter` - WebGPU adapter interface
-- `GPUDevice` - WebGPU device interface
-- `GPUUncapturedErrorEvent` - Error event type
-
-See the [source file](../src/core/GPUContext.ts) for type usage.
+All WebGPU types are provided by `@webgpu/types`. See [GPUContext.ts](../src/core/GPUContext.ts) and [RenderScheduler.ts](../src/core/RenderScheduler.ts) for type usage.
 
 ## Related Resources
 
