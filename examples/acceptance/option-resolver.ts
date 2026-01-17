@@ -1,4 +1,5 @@
 import { resolveOptions } from '../../src/config/OptionResolver';
+import { lightTheme } from '../../src/themes';
 
 // TypeScript-only acceptance checks for Story 1.3.
 // This file is excluded from the library build (tsconfig excludes `examples/`).
@@ -20,5 +21,13 @@ if (resolvedSeries.series.length !== 1) {
 }
 if (typeof resolvedSeries.series[0]?.color !== 'string' || resolvedSeries.series[0].color.length === 0) {
   throw new Error('Expected series[0].color to be filled from the palette.');
+}
+
+const resolvedTheme = resolveOptions({ theme: 'light' });
+if (resolvedTheme.theme.backgroundColor !== lightTheme.backgroundColor) {
+  throw new Error('Expected theme.backgroundColor to resolve to the light theme.');
+}
+if (resolvedTheme.theme.textColor !== lightTheme.textColor) {
+  throw new Error('Expected theme.textColor to resolve to the light theme.');
 }
 

@@ -8,6 +8,8 @@ import type {
   LineSeriesConfig,
 } from './types';
 import { defaultAreaStyle, defaultLineStyle, defaultOptions, defaultPalette } from './defaults';
+import { getTheme } from '../themes';
+import type { ThemeConfig } from '../themes/types';
 
 export type ResolvedGridConfig = Readonly<Required<GridConfig>>;
 export type ResolvedLineStyleConfig = Readonly<Required<LineStyleConfig>>;
@@ -31,10 +33,11 @@ export type ResolvedAreaSeriesConfig = Readonly<
 export type ResolvedSeriesConfig = ResolvedLineSeriesConfig | ResolvedAreaSeriesConfig;
 
 export interface ResolvedChartGPUOptions
-  extends Omit<ChartGPUOptions, 'grid' | 'xAxis' | 'yAxis' | 'palette' | 'series'> {
+  extends Omit<ChartGPUOptions, 'grid' | 'xAxis' | 'yAxis' | 'theme' | 'palette' | 'series'> {
   readonly grid: ResolvedGridConfig;
   readonly xAxis: AxisConfig;
   readonly yAxis: AxisConfig;
+  readonly theme: ThemeConfig;
   readonly palette: ReadonlyArray<string>;
   readonly series: ReadonlyArray<ResolvedSeriesConfig>;
 }
@@ -47,6 +50,44 @@ const sanitizePalette = (palette: unknown): string[] => {
     .filter((c) => c.length > 0);
 };
 
+const resolveTheme = (themeInput: unknown): ThemeConfig => {
+  const base = getTheme('dark');
+
+  if (typeof themeInput === 'string') {
+    const name = themeInput.trim().toLowerCase();
+    return name === 'light' ? getTheme('light') : getTheme('dark');
+  }
+
+  if (themeInput === null || typeof themeInput !== 'object' || Array.isArray(themeInput)) {
+    return base;
+  }
+
+  const input = themeInput as Partial<Record<keyof ThemeConfig, unknown>>;
+  const takeString = (key: keyof ThemeConfig): string | undefined => {
+    const v = input[key];
+    if (typeof v !== 'string') return undefined;
+    const trimmed = v.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  };
+
+  const fontSizeRaw = input.fontSize;
+  const fontSize =
+    typeof fontSizeRaw === 'number' && Number.isFinite(fontSizeRaw) ? fontSizeRaw : undefined;
+
+  const colorPaletteCandidate = sanitizePalette(input.colorPalette);
+
+  return {
+    backgroundColor: takeString('backgroundColor') ?? base.backgroundColor,
+    textColor: takeString('textColor') ?? base.textColor,
+    axisLineColor: takeString('axisLineColor') ?? base.axisLineColor,
+    axisTickColor: takeString('axisTickColor') ?? base.axisTickColor,
+    gridLineColor: takeString('gridLineColor') ?? base.gridLineColor,
+    colorPalette: colorPaletteCandidate.length > 0 ? colorPaletteCandidate : Array.from(base.colorPalette),
+    fontFamily: takeString('fontFamily') ?? base.fontFamily,
+    fontSize: fontSize ?? base.fontSize,
+  };
+};
+
 const normalizeOptionalColor = (color: unknown): string | undefined => {
   if (typeof color !== 'string') return undefined;
   const trimmed = color.trim();
@@ -54,9 +95,15 @@ const normalizeOptionalColor = (color: unknown): string | undefined => {
 };
 
 export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChartGPUOptions {
+  const theme = resolveTheme(userOptions.theme);
+
   const paletteCandidate = sanitizePalette(userOptions.palette);
   const palette =
-    paletteCandidate.length > 0 ? paletteCandidate : Array.from(defaultOptions.palette ?? defaultPalette);
+    paletteCandidate.length > 0
+      ? paletteCandidate
+      : sanitizePalette(theme.colorPalette).length > 0
+        ? sanitizePalette(theme.colorPalette)
+        : Array.from(defaultOptions.palette ?? defaultPalette);
 
   // Ensure palette used for modulo indexing is never empty.
   const safePalette = palette.length > 0 ? palette : Array.from(defaultPalette);
@@ -130,6 +177,7 @@ export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChart
     grid,
     xAxis,
     yAxis,
+    theme,
     palette: safePalette,
     series,
   };

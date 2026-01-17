@@ -2,6 +2,8 @@
  * Chart configuration types (Phase 1).
  */
 
+import type { ThemeConfig } from '../themes/types';
+
 export type AxisType = 'value' | 'time' | 'category';
 export type SeriesType = 'line' | 'area';
 
@@ -73,6 +75,11 @@ export interface ChartGPUOptions {
   readonly xAxis?: AxisConfig;
   readonly yAxis?: AxisConfig;
   readonly series?: ReadonlyArray<SeriesConfig>;
+  /**
+   * Chart theme used for styling and palette defaults.
+   * Accepts a built-in theme name or a custom ThemeConfig override.
+   */
+  readonly theme?: 'dark' | 'light' | ThemeConfig;
   /**
    * Color palette used for series color assignment when a series does not
    * explicitly specify `color`. Colors should be valid CSS color strings.
