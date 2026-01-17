@@ -64,6 +64,8 @@ export async function initializeGPUContext(
     );
   }
 
+  let device: GPUDevice | null = null;
+
   try {
     // Request adapter with high-performance preference
     const adapter = await navigator.gpu.requestAdapter({
@@ -78,7 +80,7 @@ export async function initializeGPUContext(
     }
 
     // Request device from adapter
-    const device = await adapter.requestDevice();
+    device = await adapter.requestDevice();
 
     if (!device) {
       throw new Error('Failed to request WebGPU device from adapter.');
@@ -138,6 +140,14 @@ export async function initializeGPUContext(
       preferredFormat,
     };
   } catch (error) {
+    // If a device was created but initialization failed, destroy it to avoid leaks.
+    if (device) {
+      try {
+        device.destroy();
+      } catch (destroyError) {
+        console.warn('Error destroying device during initialization failure:', destroyError);
+      }
+    }
     if (error instanceof Error) {
       throw error;
     }

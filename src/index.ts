@@ -4,6 +4,17 @@
 
 export const version = '1.0.0';
 
+// Chart API (Phase 1)
+export { ChartGPU } from './ChartGPU';
+export type {
+  AxisConfig,
+  ChartGPUOptions,
+  DataPoint,
+  GridConfig,
+  LineStyleConfig,
+  SeriesConfig,
+} from './config/types';
+
 // Core exports - Functional API (preferred)
 export type { GPUContextState } from './core/GPUContext';
 export {
