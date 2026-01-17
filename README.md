@@ -119,3 +119,13 @@ Chart data uploads and per-series GPU vertex buffer caching are handled by an in
 - **`setSeries(index, data)`**: packs `DataPoint` into a tightly-packed `Float32Array` (x, y) and reuploads/reallocates only when the data changes
 - **`getSeriesBuffer(index)`**: returns the cached GPU vertex buffer for a series (throws if the series hasn’t been set)
 - **`dispose()`**: destroys all cached buffers
+
+### Shared renderer utilities (Contributor notes)
+
+For renderer-focused WebGPU helpers (shader modules, render pipelines, uniform buffers), see [`rendererUtils.ts`](src/renderers/rendererUtils.ts) and the “Renderer utilities” section in [`docs/API.md`](docs/API.md#renderer-utilities-contributor-notes).
+
+Key caveats to keep in mind when using these helpers:
+
+- **4-byte write rule**: `queue.writeBuffer(...)` requires offsets and write sizes to be multiples of 4 (enforced by `writeUniformBuffer(...)`).
+- **Uniform alignment**: uniform buffer sizes are aligned (defaults to 16 bytes) by `createUniformBuffer(...)`.
+- **Dynamic offsets**: when using dynamic offsets, align offsets to `device.limits.minUniformBufferOffsetAlignment` (commonly 256).
