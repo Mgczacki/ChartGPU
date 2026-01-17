@@ -40,8 +40,8 @@ async function main() {
 
   const options: ChartGPUOptions = {
     grid: { left: 70, right: 24, top: 24, bottom: 56 },
-    xAxis: { type: 'value', min: 0, max: xMax },
-    yAxis: { type: 'value', min: -1.1, max: 1.1 },
+    xAxis: { type: 'value', min: 0, max: xMax, name: 'Angle (rad)' },
+    yAxis: { type: 'value', min: -1.1, max: 1.1, name: 'Amplitude' },
     palette: ['#4a9eff', '#ff4ab0', '#40d17c'],
     series: [
       {

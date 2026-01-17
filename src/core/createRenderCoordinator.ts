@@ -399,6 +399,8 @@ export function createRenderCoordinator(gpuContext: GPUContextLike, options: Res
       const offsetY = canvas.offsetTop;
 
       const plotLeftCss = clipXToCanvasCssPx(plotClipRect.left, canvasCssWidth);
+      const plotRightCss = clipXToCanvasCssPx(plotClipRect.right, canvasCssWidth);
+      const plotTopCss = clipYToCanvasCssPx(plotClipRect.top, canvasCssHeight);
       const plotBottomCss = clipYToCanvasCssPx(plotClipRect.bottom, canvasCssHeight);
 
       overlay.clear();
@@ -426,6 +428,7 @@ export function createRenderCoordinator(gpuContext: GPUContextLike, options: Res
           color: currentOptions.theme.textColor,
           anchor,
         });
+        span.dir = 'auto';
         span.style.fontFamily = currentOptions.theme.fontFamily;
       }
 
@@ -436,6 +439,7 @@ export function createRenderCoordinator(gpuContext: GPUContextLike, options: Res
       const yTickStep = yTickCount === 1 ? 0 : (yDomainMax - yDomainMin) / (yTickCount - 1);
       const yFormatter = createTickFormatter(yTickStep);
       const yLabelX = plotLeftCss - yTickLengthCssPx - LABEL_PADDING_CSS_PX;
+      const ySpans: HTMLSpanElement[] = [];
 
       for (let i = 0; i < yTickCount; i++) {
         const t = yTickCount === 1 ? 0.5 : i / (yTickCount - 1);
@@ -450,7 +454,51 @@ export function createRenderCoordinator(gpuContext: GPUContextLike, options: Res
           color: currentOptions.theme.textColor,
           anchor: 'end',
         });
+        span.dir = 'auto';
         span.style.fontFamily = currentOptions.theme.fontFamily;
+        ySpans.push(span);
+      }
+
+      const axisNameFontSize = Math.max(
+        currentOptions.theme.fontSize + 1,
+        Math.round(currentOptions.theme.fontSize * 1.15)
+      );
+
+      const xAxisName = currentOptions.xAxis.name?.trim() ?? '';
+      if (xAxisName.length > 0) {
+        const xCenter = (plotLeftCss + plotRightCss) / 2;
+        const xTitleY =
+          xLabelY + currentOptions.theme.fontSize * 0.5 + LABEL_PADDING_CSS_PX + axisNameFontSize * 0.5;
+        const span = overlay.addLabel(xAxisName, offsetX + xCenter, offsetY + xTitleY, {
+          fontSize: axisNameFontSize,
+          color: currentOptions.theme.textColor,
+          anchor: 'middle',
+        });
+        span.dir = 'auto';
+        span.style.fontFamily = currentOptions.theme.fontFamily;
+        span.style.fontWeight = '600';
+      }
+
+      const yAxisName = currentOptions.yAxis.name?.trim() ?? '';
+      if (yAxisName.length > 0) {
+        const maxTickLabelWidth =
+          ySpans.length === 0
+            ? 0
+            : ySpans.reduce((max, s) => Math.max(max, s.getBoundingClientRect().width), 0);
+
+        const yCenter = (plotTopCss + plotBottomCss) / 2;
+        const yTickLabelLeft = yLabelX - maxTickLabelWidth;
+        const yTitleX = yTickLabelLeft - LABEL_PADDING_CSS_PX - axisNameFontSize * 0.5;
+
+        const span = overlay.addLabel(yAxisName, offsetX + yTitleX, offsetY + yCenter, {
+          fontSize: axisNameFontSize,
+          color: currentOptions.theme.textColor,
+          anchor: 'middle',
+          rotation: -90,
+        });
+        span.dir = 'auto';
+        span.style.fontFamily = currentOptions.theme.fontFamily;
+        span.style.fontWeight = '600';
       }
     }
   };
