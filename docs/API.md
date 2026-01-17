@@ -27,6 +27,10 @@ See [ChartGPU.ts](../src/ChartGPU.ts) for the full interface and lifecycle behav
 
 Data upload and scale/bounds derivation occur during [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts) `RenderCoordinator.render()` (not during `setOption(...)` itself).
 
+**Legend (automatic):**
+
+ChartGPU currently mounts a small legend panel as an internal HTML overlay (series swatch + series name) alongside the canvas. The legend is created and managed by the render pipeline in [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts) (default position: `'right'`), updates when `setOption(...)` is called, and is disposed with the chart. Series labels come from `series[i].name` (trimmed), falling back to `Series N`; swatch colors come from `series[i].color` when provided, otherwise the resolved theme palette (see internal [`createLegend`](../src/components/createLegend.ts)).
+
 ### `ChartGPUOptions`
 
 Chart configuration options.
@@ -253,6 +257,16 @@ An internal DOM helper for rendering text labels above the canvas using an absol
 - **Coordinates**: `x` / `y` are in CSS pixels relative to the container’s top-left corner.
 - **Pointer events**: the overlay uses `pointer-events: none` so it won’t intercept mouse/touch input.
 - **Current usage**: used by the render coordinator to render numeric axis tick value labels above the canvas. See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts).
+
+### Legend (internal / contributor notes)
+
+An internal DOM helper for rendering a series legend (color swatch + series name) above the canvas using an absolutely-positioned HTML overlay. See [`createLegend.ts`](../src/components/createLegend.ts). This module is intentionally not exported from the public entrypoint (`src/index.ts`).
+
+- **Factory**: `createLegend(container: HTMLElement, position?: 'top' | 'bottom' | 'left' | 'right')`
+- **`Legend` methods (essential)**:
+  - `update(series: ReadonlyArray<SeriesConfig>, theme: ThemeConfig): void`
+  - `dispose(): void`
+- **Current usage**: created and updated by the render coordinator (default position `'right'`). See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts).
 
 ### Render coordinator (internal / contributor notes)
 

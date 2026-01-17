@@ -11,6 +11,8 @@ import type { LinearScale } from '../utils/scales';
 import { parseCssColorToGPUColor } from '../utils/colors';
 import { createTextOverlay } from '../components/createTextOverlay';
 import type { TextOverlay, TextOverlayAnchor } from '../components/createTextOverlay';
+import { createLegend } from '../components/createLegend';
+import type { Legend } from '../components/createLegend';
 
 export interface GPUContextLike {
   readonly device: GPUDevice | null;
@@ -211,10 +213,13 @@ export function createRenderCoordinator(gpuContext: GPUContextLike, options: Res
   const targetFormat = gpuContext.preferredFormat ?? DEFAULT_TARGET_FORMAT;
   const overlayContainer = gpuContext.canvas.parentElement;
   const overlay: TextOverlay | null = overlayContainer ? createTextOverlay(overlayContainer) : null;
+  const legend: Legend | null = overlayContainer ? createLegend(overlayContainer, 'right') : null;
 
   let disposed = false;
   let currentOptions: ResolvedChartGPUOptions = options;
   let lastSeriesCount = options.series.length;
+
+  legend?.update(currentOptions.series, currentOptions.theme);
 
   let dataStore = createDataStore(device);
 
@@ -255,6 +260,7 @@ export function createRenderCoordinator(gpuContext: GPUContextLike, options: Res
   const setOptions: RenderCoordinator['setOptions'] = (resolvedOptions) => {
     assertNotDisposed();
     currentOptions = resolvedOptions;
+    legend?.update(resolvedOptions.series, resolvedOptions.theme);
 
     const nextCount = resolvedOptions.series.length;
     ensureAreaRendererCount(nextCount);
@@ -523,6 +529,8 @@ export function createRenderCoordinator(gpuContext: GPUContextLike, options: Res
 
     dataStore.dispose();
 
+    // Dispose the legend before the text overlay (both touch container positioning).
+    legend?.dispose();
     overlay?.dispose();
   };
 
