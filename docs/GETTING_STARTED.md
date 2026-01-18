@@ -119,6 +119,8 @@ The `scatter` example demonstrates instanced scatter rendering with thousands of
 
 The `grouped-bar` example demonstrates clustered + stacked bar rendering (via `series[i].stack`, including negative values) and bar layout options (`barWidth`, `barGap`, `barCategoryGap`). See [grouped-bar/main.ts](../examples/grouped-bar/main.ts).
 
+The `data-update-animation` example is the visual verification for data update transition animations: subsequent `setOption(...)` calls that change series data (cartesian and pie) animate when `ChartGPUOptions.animation` is enabled. See [data-update-animation/main.ts](../examples/data-update-animation/main.ts).
+
 The `sampling` example demonstrates cartesian series sampling with x-axis data zoom: as the percent-space zoom window \([0, 100]\) changes, ChartGPU resamples the **visible x-range** from raw (unsampled) data (debounced ~100ms). Axis auto-bounds remain derived from raw (unsampled) series data unless you set explicit axis `min`/`max`. See [sampling/main.ts](../examples/sampling/main.ts), [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts), and [`createZoomState.ts`](../src/interaction/createZoomState.ts).
 
 The `pie` example demonstrates pie/donut rendering and per-slice `PieDataItem.color?: string`. See [pie/main.ts](../examples/pie/main.ts) and the option types in [`types.ts`](../src/config/types.ts).

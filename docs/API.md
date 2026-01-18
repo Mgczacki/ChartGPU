@@ -192,6 +192,16 @@ See [`types.ts`](../src/config/types.ts) for the full type definition.
 - **`AnimationConfig`**: supports optional `duration?: number` (ms), `easing?: 'linear' | 'cubicOut' | 'cubicInOut' | 'bounceOut'`, and `delay?: number` (ms). See [`types.ts`](../src/config/types.ts).
   - **Built-in easing implementations (internal)**: see [`easing.ts`](../src/utils/easing.ts) and the name→function helper `getEasing(...)`.
 - **Initial-load intro animation**: when animation is enabled, series marks animate on first render. Axes, grid lines, and labels render immediately (not animated). Per-series effects: line/area series reveal left-to-right via plot scissor; bar series grow upward from baseline; pie slices expand radius; scatter points fade in. The intro animation requests frames internally during the transition. See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts). Streaming demos may prefer disabling animation (`animation: false`).
+- **Data update transition animation (Story 5.17)**: when animation is enabled, subsequent calls to `ChartGPUInstance.setOption(...)` (and the internal `RenderCoordinator.setOptions(...)`) that change series data can animate transitions after the initial render has occurred. See the internal implementation in [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts) and the visual acceptance example in [`examples/data-update-animation/`](../examples/data-update-animation/).
+  - **When it triggers (high-level)**: a post-initial-render options update that changes `series[i].data` (cartesian and pie), with `ChartGPUOptions.animation` enabled.
+  - **What animates (high-level)**:
+    - **Cartesian series**: y-values interpolate by index while x-values come from the new series (index-aligned). Bars morph via the same y interpolation.
+    - **Pie series**: slice values interpolate by index, producing animated angle changes.
+    - **Derived domains/scales**: when auto-derived axis domains change (from updated data), the domain values animate to the new extents.
+  - **Constraints / notes (high-level)**:
+    - **Match-by-index**: interpolation is index-based; length changes and type/shape mismatches may skip interpolation and apply the new series immediately.
+    - **Large-series safeguard**: very large series may skip per-point interpolation while still animating derived domains (internal safeguard).
+    - **Mid-flight updates**: a new `setOption(...)` during an active transition rebases the transition from the current displayed state (avoids a visual jump).
 
 ### Animation controller (internal)
 
