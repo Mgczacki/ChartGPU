@@ -273,11 +273,13 @@ export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChart
 
   // runtime safety for JS callers
   const animationRaw = (userOptions as unknown as { readonly animation?: unknown }).animation;
-  const animation: ChartGPUOptions['animation'] =
+  const animationCandidate: ChartGPUOptions['animation'] =
     typeof animationRaw === 'boolean' ||
     (animationRaw !== null && typeof animationRaw === 'object' && !Array.isArray(animationRaw))
       ? (animationRaw as ChartGPUOptions['animation'])
       : undefined;
+  // Default: animation enabled (with defaults) unless explicitly disabled.
+  const animation: ChartGPUOptions['animation'] = animationCandidate ?? true;
 
   // Backward compatibility:
   // - If `userOptions.palette` is provided (non-empty), treat it as an override for the theme palette.

@@ -187,6 +187,7 @@ See [`types.ts`](../src/config/types.ts) for the full type definition.
 
 - **`ChartGPUOptions.animation?: AnimationConfig | boolean`**: optional animation configuration.
   - **Disablement**: set to `false` to disable all animation.
+  - **Default**: when omitted, animation is enabled with defaults (equivalent to `true`).
   - **Defaults**: when enabled, `AnimationConfig.duration` defaults to `300`ms when omitted.
 - **`AnimationConfig`**: supports optional `duration?: number` (ms), `easing?: 'linear' | 'cubicOut' | 'cubicInOut' | 'bounceOut'`, and `delay?: number` (ms). See [`types.ts`](../src/config/types.ts).
   - **Built-in easing implementations (internal)**: see [`easing.ts`](../src/utils/easing.ts) and the name→function helper `getEasing(...)`.
