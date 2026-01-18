@@ -26,6 +26,7 @@ export type {
   LineSeriesConfig,
   SeriesConfig,
   SeriesType,
+  TooltipParams,
 } from './config/types';
 
 // Options defaults + resolution
