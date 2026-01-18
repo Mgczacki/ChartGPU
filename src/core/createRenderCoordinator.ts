@@ -1,5 +1,5 @@
 import type { ResolvedAreaSeriesConfig, ResolvedChartGPUOptions } from '../config/OptionResolver';
-import type { DataPoint, TooltipParams } from '../config/types';
+import type { DataPoint } from '../config/types';
 import { createDataStore } from '../data/createDataStore';
 import { createAxisRenderer } from '../renderers/createAxisRenderer';
 import { createGridRenderer } from '../renderers/createGridRenderer';
@@ -21,6 +21,7 @@ import { createLegend } from '../components/createLegend';
 import type { Legend } from '../components/createLegend';
 import { createTooltip } from '../components/createTooltip';
 import type { Tooltip } from '../components/createTooltip';
+import type { TooltipParams } from '../config/types';
 import { formatTooltipAxis, formatTooltipItem } from '../components/formatTooltip';
 
 export interface GPUContextLike {
