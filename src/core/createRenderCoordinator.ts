@@ -652,6 +652,8 @@ export function createRenderCoordinator(
     assertNotDisposed();
     if (!gpuContext.canvasContext || !gpuContext.canvas) return;
 
+    const hasCartesianSeries = currentOptions.series.some((s) => s.type !== 'pie');
+
     const gridArea = computeGridArea(gpuContext, currentOptions);
     eventManager.updateGridArea(gridArea);
     const { xScale, yScale } = computeScales(currentOptions, gridArea);
@@ -703,22 +705,24 @@ export function createRenderCoordinator(
     }
 
     gridRenderer.prepare(gridArea, { color: currentOptions.theme.gridLineColor });
-    xAxisRenderer.prepare(
-      currentOptions.xAxis,
-      xScale,
-      'x',
-      gridArea,
-      currentOptions.theme.axisLineColor,
-      currentOptions.theme.axisTickColor
-    );
-    yAxisRenderer.prepare(
-      currentOptions.yAxis,
-      yScale,
-      'y',
-      gridArea,
-      currentOptions.theme.axisLineColor,
-      currentOptions.theme.axisTickColor
-    );
+    if (hasCartesianSeries) {
+      xAxisRenderer.prepare(
+        currentOptions.xAxis,
+        xScale,
+        'x',
+        gridArea,
+        currentOptions.theme.axisLineColor,
+        currentOptions.theme.axisTickColor
+      );
+      yAxisRenderer.prepare(
+        currentOptions.yAxis,
+        yScale,
+        'y',
+        gridArea,
+        currentOptions.theme.axisLineColor,
+        currentOptions.theme.axisTickColor
+      );
+    }
 
     // Crosshair prepare uses canvas-local CSS px (EventManager payload x/y) and current gridArea.
     if (effectivePointer.hasPointer && effectivePointer.isInGrid) {
@@ -1039,8 +1043,10 @@ export function createRenderCoordinator(
     }
 
     highlightRenderer.render(pass);
-    xAxisRenderer.render(pass);
-    yAxisRenderer.render(pass);
+    if (hasCartesianSeries) {
+      xAxisRenderer.render(pass);
+      yAxisRenderer.render(pass);
+    }
     crosshairRenderer.render(pass);
 
     pass.end();
@@ -1049,7 +1055,7 @@ export function createRenderCoordinator(
     if (overlay && overlayContainer) {
       const canvas = gpuContext.canvas;
       // IMPORTANT: overlay positioning must be done in *CSS pixels* and in the overlayContainer's
-      // coordinate space (its padding box). Using `canvas.width / dpr` + `getBoundingClientRect()`
+      // coordinate space (its padding box). Using   `canvas.width / dpr` + `getBoundingClientRect()`
       // deltas can drift under CSS scaling/zoom and misalign with container padding/border.
       const canvasCssWidth = canvas.clientWidth;
       const canvasCssHeight = canvas.clientHeight;
@@ -1066,6 +1072,7 @@ export function createRenderCoordinator(
       const plotBottomCss = clipYToCanvasCssPx(plotClipRect.bottom, canvasCssHeight);
 
       overlay.clear();
+      if (!hasCartesianSeries) return;
 
       // Mirror tick generation logic from `createAxisRenderer` exactly (tick count and domain fallback).
       const xTickCount = DEFAULT_TICK_COUNT;

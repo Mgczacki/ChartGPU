@@ -20,6 +20,7 @@ export type {
   AxisConfig,
   AxisType,
   ChartGPUOptions,
+  DataZoomConfig,
   DataPoint,
   GridConfig,
   LineStyleConfig,

@@ -40,6 +40,17 @@ export interface AxisConfig {
   readonly name?: string;
 }
 
+export interface DataZoomConfig {
+  readonly type: 'inside' | 'slider';
+  readonly xAxisIndex?: number;
+  /** Start percent in [0, 100]. */
+  readonly start?: number;
+  /** End percent in [0, 100]. */
+  readonly end?: number;
+  readonly minSpan?: number;
+  readonly maxSpan?: number;
+}
+
 export interface LineStyleConfig {
   readonly width?: number;
   readonly opacity?: number;
@@ -176,6 +187,7 @@ export interface ChartGPUOptions {
   readonly grid?: GridConfig;
   readonly xAxis?: AxisConfig;
   readonly yAxis?: AxisConfig;
+  readonly dataZoom?: ReadonlyArray<DataZoomConfig>;
   readonly series?: ReadonlyArray<SeriesConfig>;
   /**
    * Chart theme used for styling and palette defaults.

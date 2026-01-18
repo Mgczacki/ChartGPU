@@ -26,6 +26,26 @@ const getSeriesColor = (
   return '#000000';
 };
 
+const getPieSliceLabel = (sliceName: string | undefined, sliceIndex: number): string => {
+  const candidate = sliceName?.trim();
+  return candidate ? candidate : `Slice ${sliceIndex + 1}`;
+};
+
+const getPieSliceColor = (
+  sliceColor: string | undefined,
+  seriesIndex: number,
+  sliceIndex: number,
+  theme: ThemeConfig
+): string => {
+  const explicit = sliceColor?.trim();
+  if (explicit) return explicit;
+
+  const palette = theme.colorPalette;
+  const len = palette.length;
+  if (len > 0) return palette[(seriesIndex + sliceIndex) % len] ?? '#000000';
+  return '#000000';
+};
+
 export function createLegend(
   container: HTMLElement,
   position: LegendPosition = 'right'
@@ -127,29 +147,60 @@ export function createLegend(
     root.style.fontFamily = theme.fontFamily;
     root.style.fontSize = `${theme.fontSize}px`;
 
-    const items = series.map((s, i) => {
-      const item = document.createElement('div');
-      item.style.display = 'flex';
-      item.style.alignItems = 'center';
-      item.style.gap = '6px';
-      item.style.lineHeight = '1.1';
-      item.style.whiteSpace = 'nowrap';
+    const items: HTMLElement[] = [];
+    for (let seriesIndex = 0; seriesIndex < series.length; seriesIndex++) {
+      const s = series[seriesIndex];
 
-      const swatch = document.createElement('div');
-      swatch.style.width = '10px';
-      swatch.style.height = '10px';
-      swatch.style.borderRadius = '2px';
-      swatch.style.flex = '0 0 auto';
-      swatch.style.background = getSeriesColor(s, i, theme);
-      swatch.style.border = `1px solid ${theme.axisLineColor}`;
+      if (s.type === 'pie') {
+        for (let sliceIndex = 0; sliceIndex < s.data.length; sliceIndex++) {
+          const slice = s.data[sliceIndex];
 
-      const label = document.createElement('span');
-      label.textContent = getSeriesName(s, i);
+          const item = document.createElement('div');
+          item.style.display = 'flex';
+          item.style.alignItems = 'center';
+          item.style.gap = '6px';
+          item.style.lineHeight = '1.1';
+          item.style.whiteSpace = 'nowrap';
 
-      item.appendChild(swatch);
-      item.appendChild(label);
-      return item;
-    });
+          const swatch = document.createElement('div');
+          swatch.style.width = '10px';
+          swatch.style.height = '10px';
+          swatch.style.borderRadius = '2px';
+          swatch.style.flex = '0 0 auto';
+          swatch.style.background = getPieSliceColor(slice?.color, seriesIndex, sliceIndex, theme);
+          swatch.style.border = `1px solid ${theme.axisLineColor}`;
+
+          const label = document.createElement('span');
+          label.textContent = getPieSliceLabel(slice?.name, sliceIndex);
+
+          item.appendChild(swatch);
+          item.appendChild(label);
+          items.push(item);
+        }
+      } else {
+        const item = document.createElement('div');
+        item.style.display = 'flex';
+        item.style.alignItems = 'center';
+        item.style.gap = '6px';
+        item.style.lineHeight = '1.1';
+        item.style.whiteSpace = 'nowrap';
+
+        const swatch = document.createElement('div');
+        swatch.style.width = '10px';
+        swatch.style.height = '10px';
+        swatch.style.borderRadius = '2px';
+        swatch.style.flex = '0 0 auto';
+        swatch.style.background = getSeriesColor(s, seriesIndex, theme);
+        swatch.style.border = `1px solid ${theme.axisLineColor}`;
+
+        const label = document.createElement('span');
+        label.textContent = getSeriesName(s, seriesIndex);
+
+        item.appendChild(swatch);
+        item.appendChild(label);
+        items.push(item);
+      }
+    }
 
     list.replaceChildren(...items);
   };

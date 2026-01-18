@@ -71,7 +71,12 @@ For `'crosshairMove'`, callbacks receive a `ChartGPUCrosshairMovePayload` object
 
 **Legend (automatic):**
 
-ChartGPU currently mounts a small legend panel as an internal HTML overlay (series swatch + series name) alongside the canvas. The legend is created and managed by the render pipeline in [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts) (default position: `'right'`), updates when `setOption(...)` is called, and is disposed with the chart. Series labels come from `series[i].name` (trimmed), falling back to `Series N`; swatch colors come from `series[i].color` when provided, otherwise the resolved theme palette (see internal [`createLegend`](../src/components/createLegend.ts)).
+ChartGPU currently mounts a small legend panel as an internal HTML overlay alongside the canvas. The legend is created and managed by the render pipeline in [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts) (default position: `'right'`), updates when `setOption(...)` is called, and is disposed with the chart.
+
+- **Non-pie series**: one legend row per series (swatch + label). Labels come from `series[i].name` (trimmed), falling back to `Series N`. Swatch colors come from `series[i].color` when provided, otherwise the resolved theme palette.
+- **Pie series**: one legend row per slice (swatch + label). Labels come from `series[i].data[j].name` (trimmed), falling back to `Slice N`. Swatch colors come from `series[i].data[j].color` when provided, otherwise a palette fallback.
+
+See the internal legend implementation in [`createLegend.ts`](../src/components/createLegend.ts).
 
 ### Chart sync (interaction)
 
@@ -125,6 +130,7 @@ See [`types.ts`](../src/config/types.ts) for the full type definition.
     - Pie series do **not** participate in cartesian x/y bounds derivation (they do not affect `xAxis`/`yAxis` min/max auto-derivation).
     - Pie series do **not** participate in cartesian hit-testing utilities (see [`findNearestPoint.ts`](../src/interaction/findNearestPoint.ts) and [`findPointsAtX.ts`](../src/interaction/findPointsAtX.ts)).
     - Pie slices **do** support hover hit-testing for ChartGPU’s internal tooltip and ChartGPU instance events (`'click'`, `'mouseover'`, `'mouseout'`) via [`findPieSlice.ts`](../src/interaction/findPieSlice.ts) (wired in [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts) and [`ChartGPU.ts`](../src/ChartGPU.ts)).
+  - **Pie-only charts**: when `series` contains only `type: 'pie'`, the render coordinator skips cartesian x/y axis rendering and does not render the DOM tick value labels. See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts).
   - **Slice colors**: each `PieDataItem` supports `color?: string`. Color precedence is **`item.color`** when provided, otherwise a palette fallback (see [`resolveOptions`](../src/config/OptionResolver.ts)). For a working example, see [`examples/pie/`](../examples/pie/).
 - **`BarItemStyleConfig`**: bar styling options. See [`types.ts`](../src/config/types.ts).
   - **`borderRadius?: number`**
@@ -134,8 +140,20 @@ See [`types.ts`](../src/config/types.ts) for the full type definition.
 **Axis configuration (essential):**
 
 - **`AxisConfig`**: configuration for `xAxis` / `yAxis`. See [`types.ts`](../src/config/types.ts).
-- **`AxisConfig.name?: string`**: renders an axis title when provided (and non-empty after `trim()`): x-axis titles are centered below x-axis tick labels, and y-axis titles are rotated \(-90°\) and placed left of y-axis tick labels; titles can be clipped if `grid.bottom` / `grid.left` margins are too small.
+- **`AxisConfig.name?: string`**: renders an axis title for cartesian charts when provided (and non-empty after `trim()`): x-axis titles are centered below x-axis tick labels, and y-axis titles are rotated \(-90°\) and placed left of y-axis tick labels; titles can be clipped if `grid.bottom` / `grid.left` margins are too small. See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts).
 - **Axis title styling**: titles are rendered via the internal DOM text overlay and use the resolved theme’s `textColor` and `fontFamily` with slightly larger, bold text (label elements also set `dir='auto'`).
+
+**Data zoom (type definitions):**
+
+- **`ChartGPUOptions.dataZoom?: ReadonlyArray<DataZoomConfig>`**: optional data-zoom configuration list. See [`ChartGPUOptions`](../src/config/types.ts) and [`DataZoomConfig`](../src/config/types.ts).
+- **Type-only note (important)**: `dataZoom` and `DataZoomConfig` are configuration types; runtime zoom interaction/UI behavior is not necessarily implemented.
+- **`DataZoomConfig`**: data zoom configuration type. See [`DataZoomConfig`](../src/config/types.ts).
+  - **`type: 'inside' | 'slider'`**
+  - **`xAxisIndex?: number`**
+  - **`start?: number`**: start percent in \([0, 100]\)
+  - **`end?: number`**: end percent in \([0, 100]\)
+  - **`minSpan?: number`**
+  - **`maxSpan?: number`**
 
 **Tooltip configuration (type definitions):**
 
@@ -443,17 +461,20 @@ An internal DOM helper for rendering text labels above the canvas using an absol
   - `dispose(): void`
 - **Coordinates**: `x` / `y` are in CSS pixels relative to the container’s top-left corner.
 - **Pointer events**: the overlay uses `pointer-events: none` so it won’t intercept mouse/touch input.
-- **Current usage**: used by the render coordinator to render numeric axis tick value labels above the canvas. See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts).
+- **Current usage**: used by the render coordinator to render numeric cartesian axis tick value labels above the canvas (pie-only charts skip these labels). See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts).
 
 ### Legend (internal / contributor notes)
 
-An internal DOM helper for rendering a series legend (color swatch + series name) above the canvas using an absolutely-positioned HTML overlay. See [`createLegend.ts`](../src/components/createLegend.ts). This module is intentionally not exported from the public entrypoint (`src/index.ts`).
+An internal DOM helper for rendering a legend above the canvas using an absolutely-positioned HTML overlay. See [`createLegend.ts`](../src/components/createLegend.ts). This module is intentionally not exported from the public entrypoint (`src/index.ts`).
 
 - **Factory**: `createLegend(container: HTMLElement, position?: 'top' | 'bottom' | 'left' | 'right')`
 - **`Legend` methods (essential)**:
   - `update(series: ReadonlyArray<SeriesConfig>, theme: ThemeConfig): void`
   - `dispose(): void`
-- **Current usage**: created and updated by the render coordinator (default position `'right'`). See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts).
+- **Legend rows (Story 4.15)**:
+  - Non-pie: one row per series (`series[i].name`, `series[i].color` / palette fallback)
+  - Pie: one row per slice (`series[i].data[j].name`, `series[i].data[j].color` / palette fallback)
+- **Current usage**: created and updated by the render coordinator (default position `'right'`), using the resolved series list (`resolvedOptions.series`). See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts).
 
 ### Tooltip overlay (internal / contributor notes)
 
