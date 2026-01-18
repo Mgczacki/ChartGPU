@@ -1,10 +1,19 @@
-import type { DataPoint, DataPointTuple } from '../config/types';
-import type { ResolvedBarSeriesConfig, ResolvedSeriesConfig } from '../config/OptionResolver';
+import type { DataPoint, DataPointTuple, ScatterPointTuple } from '../config/types';
+import type {
+  ResolvedBarSeriesConfig,
+  ResolvedScatterSeriesConfig,
+  ResolvedSeriesConfig,
+} from '../config/OptionResolver';
 import type { LinearScale } from '../utils/scales';
 
 const DEFAULT_MAX_DISTANCE_PX = 20;
 const DEFAULT_BAR_GAP = 0.1;
 const DEFAULT_BAR_CATEGORY_GAP = 0.2;
+const DEFAULT_SCATTER_RADIUS_CSS_PX = 4;
+
+// Cache (Story 4.10): used only for scatter-series pruning so we don't degrade to O(n)
+// scans per pointer move when no candidate has been found yet.
+const scatterMaxRadiusCache = new WeakMap<ResolvedScatterSeriesConfig, number>();
 
 export type NearestPointMatch = Readonly<{
   seriesIndex: number;
@@ -14,8 +23,8 @@ export type NearestPointMatch = Readonly<{
   distance: number;
 }>;
 
-type TuplePoint = readonly [x: number, y: number];
-type ObjectPoint = Readonly<{ x: number; y: number }>;
+type TuplePoint = DataPointTuple;
+type ObjectPoint = Readonly<{ x: number; y: number; size?: number }>;
 
 export type BarBounds = { left: number; right: number; top: number; bottom: number };
 
@@ -50,6 +59,93 @@ const isTupleDataPoint = (p: DataPoint): p is DataPointTuple => Array.isArray(p)
 const getPointXY = (p: DataPoint): { readonly x: number; readonly y: number } => {
   if (isTupleDataPoint(p)) return { x: p[0], y: p[1] };
   return { x: p.x, y: p.y };
+};
+
+const getPointSizeCssPx = (p: DataPoint): number | null => {
+  if (isTupleDataPoint(p)) {
+    const s = p[2];
+    return typeof s === 'number' && Number.isFinite(s) ? s : null;
+  }
+  const s = p.size;
+  return typeof s === 'number' && Number.isFinite(s) ? s : null;
+};
+
+const toScatterTuple = (p: DataPoint): ScatterPointTuple => {
+  if (isTupleDataPoint(p)) return p;
+  return [p.x, p.y, p.size] as const;
+};
+
+const safeCallSymbolSize = (
+  fn: (value: ScatterPointTuple) => number,
+  value: ScatterPointTuple,
+): number | null => {
+  try {
+    const v = fn(value);
+    return typeof v === 'number' && Number.isFinite(v) ? v : null;
+  } catch {
+    return null;
+  }
+};
+
+const getScatterRadiusCssPx = (seriesCfg: ResolvedScatterSeriesConfig, p: DataPoint): number => {
+  // Mirrors `createScatterRenderer.ts` size semantics (but stays in CSS px):
+  // point.size -> series.symbolSize -> default 4px.
+  const perPoint = getPointSizeCssPx(p);
+  if (perPoint != null) return Math.max(0, perPoint);
+
+  const seriesSymbolSize = seriesCfg.symbolSize;
+  if (typeof seriesSymbolSize === 'number') {
+    return Number.isFinite(seriesSymbolSize)
+      ? Math.max(0, seriesSymbolSize)
+      : DEFAULT_SCATTER_RADIUS_CSS_PX;
+  }
+  if (typeof seriesSymbolSize === 'function') {
+    const v = safeCallSymbolSize(seriesSymbolSize, toScatterTuple(p));
+    return v == null ? DEFAULT_SCATTER_RADIUS_CSS_PX : Math.max(0, v);
+  }
+
+  return DEFAULT_SCATTER_RADIUS_CSS_PX;
+};
+
+const getMaxScatterRadiusCssPx = (seriesCfg: ResolvedScatterSeriesConfig): number => {
+  const cached = scatterMaxRadiusCache.get(seriesCfg);
+  if (cached !== undefined) return cached;
+
+  const data = seriesCfg.data;
+  const seriesSymbolSize = seriesCfg.symbolSize;
+
+  let maxRadius = 0;
+
+  // Fast path: numeric (or missing) series size means max is just max(point.size, series/default).
+  if (typeof seriesSymbolSize !== 'function') {
+    const seriesFallback =
+      typeof seriesSymbolSize === 'number' && Number.isFinite(seriesSymbolSize)
+        ? Math.max(0, seriesSymbolSize)
+        : DEFAULT_SCATTER_RADIUS_CSS_PX;
+
+    let maxPerPoint = 0;
+    let anyPointWithoutSize = false;
+    for (let i = 0; i < data.length; i++) {
+      const pSize = getPointSizeCssPx(data[i]);
+      if (pSize == null) {
+        anyPointWithoutSize = true;
+      } else {
+        const r = Math.max(0, pSize);
+        if (r > maxPerPoint) maxPerPoint = r;
+      }
+    }
+    maxRadius = anyPointWithoutSize ? Math.max(maxPerPoint, seriesFallback) : maxPerPoint;
+  } else {
+    // Slow path: symbolSize function can vary per point, so compute true max once and cache it.
+    for (let i = 0; i < data.length; i++) {
+      const r = getScatterRadiusCssPx(seriesCfg, data[i]);
+      if (r > maxRadius) maxRadius = r;
+    }
+  }
+
+  maxRadius = Number.isFinite(maxRadius) ? Math.max(0, maxRadius) : DEFAULT_SCATTER_RADIUS_CSS_PX;
+  scatterMaxRadiusCache.set(seriesCfg, maxRadius);
+  return maxRadius;
 };
 
 // Note: we intentionally do NOT compute “nearest bar by distance”.
@@ -396,7 +492,7 @@ export function findNearestPoint(
   let bestSeriesIndex = -1;
   let bestDataIndex = -1;
   let bestPoint: DataPoint | null = null;
-  let bestDistSq = maxDistSq;
+  let bestDistSq = Number.POSITIVE_INFINITY;
 
   // Story 4.6: Bar hit-testing (range-space bounds).
   // - Only counts as a match when cursor is inside a bar rect.
@@ -519,9 +615,15 @@ export function findNearestPoint(
   }
 
   for (let s = 0; s < series.length; s++) {
-    const data = series[s]?.data;
+    const seriesCfg = series[s];
+    const data = seriesCfg?.data;
     const n = data.length;
     if (n === 0) continue;
+
+    const isScatter = seriesCfg.type === 'scatter';
+    const scatterCfg = isScatter ? (seriesCfg as ResolvedScatterSeriesConfig) : null;
+    const maxRadiusInSeries = scatterCfg ? getMaxScatterRadiusCssPx(scatterCfg) : 0;
+    const seriesCutoffSq = isScatter ? (md + maxRadiusInSeries) * (md + maxRadiusInSeries) : maxDistSq;
 
     const first = data[0];
     const isTuple = Array.isArray(first);
@@ -535,6 +637,8 @@ export function findNearestPoint(
 
       // Expand outward while x-distance alone could still beat bestDistSq.
       while (left >= 0 || right < n) {
+        const pruneSq = Math.min(bestDistSq, seriesCutoffSq);
+
         let dxSqLeft = Number.POSITIVE_INFINITY;
         if (left >= 0) {
           const px = tupleData[left][0];
@@ -559,25 +663,39 @@ export function findNearestPoint(
           }
         }
 
-        if (dxSqLeft > bestDistSq && dxSqRight > bestDistSq) break;
+        if (dxSqLeft > pruneSq && dxSqRight > pruneSq) break;
 
         // If both sides are equally close in x, evaluate both for stable tie behavior.
-        if (dxSqLeft <= dxSqRight && dxSqLeft <= bestDistSq && left >= 0) {
+        if (dxSqLeft <= dxSqRight && dxSqLeft <= pruneSq && left >= 0) {
           const py = tupleData[left][1];
           if (Number.isFinite(py)) {
             const sy = yScale.scale(py);
             if (Number.isFinite(sy)) {
               const dy = sy - y;
               const distSq = dxSqLeft + dy * dy;
-              const isBetter =
-                distSq < bestDistSq ||
-                (distSq === bestDistSq &&
-                  (bestPoint === null || s < bestSeriesIndex || (s === bestSeriesIndex && left < bestDataIndex)));
-              if (isBetter) {
-                bestDistSq = distSq;
-                bestSeriesIndex = s;
-                bestDataIndex = left;
-                bestPoint = data[left] as DataPoint;
+              const p = data[left] as DataPoint;
+
+              const allowedSq = scatterCfg
+                ? (() => {
+                    const r = getScatterRadiusCssPx(scatterCfg, p);
+                    const allowed = md + r;
+                    return allowed * allowed;
+                  })()
+                : maxDistSq;
+
+              if (distSq <= allowedSq) {
+                const isBetter =
+                  distSq < bestDistSq ||
+                  (distSq === bestDistSq &&
+                    (bestPoint === null ||
+                      s < bestSeriesIndex ||
+                      (s === bestSeriesIndex && left < bestDataIndex)));
+                if (isBetter) {
+                  bestDistSq = distSq;
+                  bestSeriesIndex = s;
+                  bestDataIndex = left;
+                  bestPoint = p;
+                }
               }
             }
           }
@@ -586,22 +704,36 @@ export function findNearestPoint(
           left--;
         }
 
-        if (dxSqRight <= dxSqLeft && dxSqRight <= bestDistSq && right < n) {
+        if (dxSqRight <= dxSqLeft && dxSqRight <= pruneSq && right < n) {
           const py = tupleData[right][1];
           if (Number.isFinite(py)) {
             const sy = yScale.scale(py);
             if (Number.isFinite(sy)) {
               const dy = sy - y;
               const distSq = dxSqRight + dy * dy;
-              const isBetter =
-                distSq < bestDistSq ||
-                (distSq === bestDistSq &&
-                  (bestPoint === null || s < bestSeriesIndex || (s === bestSeriesIndex && right < bestDataIndex)));
-              if (isBetter) {
-                bestDistSq = distSq;
-                bestSeriesIndex = s;
-                bestDataIndex = right;
-                bestPoint = data[right] as DataPoint;
+              const p = data[right] as DataPoint;
+
+              const allowedSq = scatterCfg
+                ? (() => {
+                    const r = getScatterRadiusCssPx(scatterCfg, p);
+                    const allowed = md + r;
+                    return allowed * allowed;
+                  })()
+                : maxDistSq;
+
+              if (distSq <= allowedSq) {
+                const isBetter =
+                  distSq < bestDistSq ||
+                  (distSq === bestDistSq &&
+                    (bestPoint === null ||
+                      s < bestSeriesIndex ||
+                      (s === bestSeriesIndex && right < bestDataIndex)));
+                if (isBetter) {
+                  bestDistSq = distSq;
+                  bestSeriesIndex = s;
+                  bestDataIndex = right;
+                  bestPoint = p;
+                }
               }
             }
           }
@@ -618,6 +750,8 @@ export function findNearestPoint(
       let right = insertionIndex;
 
       while (left >= 0 || right < n) {
+        const pruneSq = Math.min(bestDistSq, seriesCutoffSq);
+
         let dxSqLeft = Number.POSITIVE_INFINITY;
         if (left >= 0) {
           const px = objectData[left].x;
@@ -642,24 +776,38 @@ export function findNearestPoint(
           }
         }
 
-        if (dxSqLeft > bestDistSq && dxSqRight > bestDistSq) break;
+        if (dxSqLeft > pruneSq && dxSqRight > pruneSq) break;
 
-        if (dxSqLeft <= dxSqRight && dxSqLeft <= bestDistSq && left >= 0) {
+        if (dxSqLeft <= dxSqRight && dxSqLeft <= pruneSq && left >= 0) {
           const py = objectData[left].y;
           if (Number.isFinite(py)) {
             const sy = yScale.scale(py);
             if (Number.isFinite(sy)) {
               const dy = sy - y;
               const distSq = dxSqLeft + dy * dy;
-              const isBetter =
-                distSq < bestDistSq ||
-                (distSq === bestDistSq &&
-                  (bestPoint === null || s < bestSeriesIndex || (s === bestSeriesIndex && left < bestDataIndex)));
-              if (isBetter) {
-                bestDistSq = distSq;
-                bestSeriesIndex = s;
-                bestDataIndex = left;
-                bestPoint = data[left] as DataPoint;
+              const p = data[left] as DataPoint;
+
+              const allowedSq = scatterCfg
+                ? (() => {
+                    const r = getScatterRadiusCssPx(scatterCfg, p);
+                    const allowed = md + r;
+                    return allowed * allowed;
+                  })()
+                : maxDistSq;
+
+              if (distSq <= allowedSq) {
+                const isBetter =
+                  distSq < bestDistSq ||
+                  (distSq === bestDistSq &&
+                    (bestPoint === null ||
+                      s < bestSeriesIndex ||
+                      (s === bestSeriesIndex && left < bestDataIndex)));
+                if (isBetter) {
+                  bestDistSq = distSq;
+                  bestSeriesIndex = s;
+                  bestDataIndex = left;
+                  bestPoint = p;
+                }
               }
             }
           }
@@ -668,22 +816,36 @@ export function findNearestPoint(
           left--;
         }
 
-        if (dxSqRight <= dxSqLeft && dxSqRight <= bestDistSq && right < n) {
+        if (dxSqRight <= dxSqLeft && dxSqRight <= pruneSq && right < n) {
           const py = objectData[right].y;
           if (Number.isFinite(py)) {
             const sy = yScale.scale(py);
             if (Number.isFinite(sy)) {
               const dy = sy - y;
               const distSq = dxSqRight + dy * dy;
-              const isBetter =
-                distSq < bestDistSq ||
-                (distSq === bestDistSq &&
-                  (bestPoint === null || s < bestSeriesIndex || (s === bestSeriesIndex && right < bestDataIndex)));
-              if (isBetter) {
-                bestDistSq = distSq;
-                bestSeriesIndex = s;
-                bestDataIndex = right;
-                bestPoint = data[right] as DataPoint;
+              const p = data[right] as DataPoint;
+
+              const allowedSq = scatterCfg
+                ? (() => {
+                    const r = getScatterRadiusCssPx(scatterCfg, p);
+                    const allowed = md + r;
+                    return allowed * allowed;
+                  })()
+                : maxDistSq;
+
+              if (distSq <= allowedSq) {
+                const isBetter =
+                  distSq < bestDistSq ||
+                  (distSq === bestDistSq &&
+                    (bestPoint === null ||
+                      s < bestSeriesIndex ||
+                      (s === bestSeriesIndex && right < bestDataIndex)));
+                if (isBetter) {
+                  bestDistSq = distSq;
+                  bestSeriesIndex = s;
+                  bestDataIndex = right;
+                  bestPoint = p;
+                }
               }
             }
           }
@@ -696,6 +858,7 @@ export function findNearestPoint(
   }
 
   if (bestPoint === null) return null;
+  if (!Number.isFinite(bestDistSq)) return null;
 
   return {
     seriesIndex: bestSeriesIndex,
