@@ -71,7 +71,12 @@ For `'crosshairMove'`, callbacks receive a `ChartGPUCrosshairMovePayload` object
 
 **Legend (automatic):**
 
-ChartGPU currently mounts a small legend panel as an internal HTML overlay (series swatch + series name) alongside the canvas. The legend is created and managed by the render pipeline in [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts) (default position: `'right'`), updates when `setOption(...)` is called, and is disposed with the chart. Series labels come from `series[i].name` (trimmed), falling back to `Series N`; swatch colors come from `series[i].color` when provided, otherwise the resolved theme palette (see internal [`createLegend`](../src/components/createLegend.ts)).
+ChartGPU currently mounts a small legend panel as an internal HTML overlay alongside the canvas. The legend is created and managed by the render pipeline in [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts) (default position: `'right'`), updates when `setOption(...)` is called, and is disposed with the chart.
+
+- **Non-pie series**: one legend row per series (swatch + label). Labels come from `series[i].name` (trimmed), falling back to `Series N`. Swatch colors come from `series[i].color` when provided, otherwise the resolved theme palette.
+- **Pie series**: one legend row per slice (swatch + label). Labels come from `series[i].data[j].name` (trimmed), falling back to `Slice N`. Swatch colors come from `series[i].data[j].color` when provided, otherwise a palette fallback.
+
+See the internal legend implementation in [`createLegend.ts`](../src/components/createLegend.ts).
 
 ### Chart sync (interaction)
 
@@ -447,13 +452,16 @@ An internal DOM helper for rendering text labels above the canvas using an absol
 
 ### Legend (internal / contributor notes)
 
-An internal DOM helper for rendering a series legend (color swatch + series name) above the canvas using an absolutely-positioned HTML overlay. See [`createLegend.ts`](../src/components/createLegend.ts). This module is intentionally not exported from the public entrypoint (`src/index.ts`).
+An internal DOM helper for rendering a legend above the canvas using an absolutely-positioned HTML overlay. See [`createLegend.ts`](../src/components/createLegend.ts). This module is intentionally not exported from the public entrypoint (`src/index.ts`).
 
 - **Factory**: `createLegend(container: HTMLElement, position?: 'top' | 'bottom' | 'left' | 'right')`
 - **`Legend` methods (essential)**:
   - `update(series: ReadonlyArray<SeriesConfig>, theme: ThemeConfig): void`
   - `dispose(): void`
-- **Current usage**: created and updated by the render coordinator (default position `'right'`). See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts).
+- **Legend rows (Story 4.15)**:
+  - Non-pie: one row per series (`series[i].name`, `series[i].color` / palette fallback)
+  - Pie: one row per slice (`series[i].data[j].name`, `series[i].data[j].color` / palette fallback)
+- **Current usage**: created and updated by the render coordinator (default position `'right'`), using the resolved series list (`resolvedOptions.series`). See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts).
 
 ### Tooltip overlay (internal / contributor notes)
 
