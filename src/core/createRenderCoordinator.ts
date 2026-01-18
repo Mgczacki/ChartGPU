@@ -650,6 +650,9 @@ export function createRenderCoordinator(
   let currentOptions: ResolvedChartGPUOptions = options;
   let lastSeriesCount = options.series.length;
 
+  // Prevent spamming console.warn for repeated misuse.
+  const warnedPieAppendSeries = new Set<number>();
+
   // Coordinator-owned runtime series store (cartesian only).
   // - `runtimeRawDataByIndex[i]` owns a mutable array for streaming appends.
   // - `runtimeRawBoundsByIndex[i]` tracks raw bounds for axis auto-bounds and zoom mapping.
@@ -667,6 +670,12 @@ export function createRenderCoordinator(
 
   // Coalesced streaming appends (flushed at the start of `render()`).
   const pendingAppendByIndex = new Map<number, DataPoint[]>();
+
+  // Tracks what the DataStore currently represents for each series index.
+  // Used to decide whether `appendSeries(...)` is a correct fast-path.
+  type GpuSeriesKind = 'unknown' | 'fullRawLine' | 'other';
+  let gpuSeriesKindByIndex: GpuSeriesKind[] = new Array(currentOptions.series.length).fill('unknown');
+  const appendedGpuThisFrame = new Set<number>();
 
   // Tooltip is a DOM overlay element; enable by default unless explicitly disabled.
   let tooltip: Tooltip | null =
@@ -1090,6 +1099,7 @@ export function createRenderCoordinator(
     currentOptions = resolvedOptions;
     runtimeBaseSeries = resolvedOptions.series;
     renderSeries = resolvedOptions.series;
+    gpuSeriesKindByIndex = new Array(resolvedOptions.series.length).fill('unknown');
     legend?.update(resolvedOptions.series, resolvedOptions.theme);
     updateZoom();
     if (resampleTimer !== null) {
@@ -1128,7 +1138,12 @@ export function createRenderCoordinator(
   const flushPendingAppendsIfNeeded = (): void => {
     if (pendingAppendByIndex.size === 0) return;
 
+    appendedGpuThisFrame.clear();
+
     const zoomRange = zoomState?.getRange() ?? null;
+    const isFullSpanZoom =
+      zoomRange == null ||
+      (Number.isFinite(zoomRange.start) && Number.isFinite(zoomRange.end) && zoomRange.start <= 0 && zoomRange.end >= 100);
     const canAutoScroll =
       currentOptions.autoScroll === true &&
       zoomState != null &&
@@ -1152,6 +1167,23 @@ export function createRenderCoordinator(
         runtimeRawBoundsByIndex[seriesIndex] = s.rawBounds ?? computeRawBoundsFromData(raw);
       }
 
+      // Optional fast-path: if the GPU buffer currently represents the full, unsampled line series,
+      // we can append just the new points to the existing GPU buffer (no full re-upload).
+      if (
+        s.type === 'line' &&
+        s.sampling === 'none' &&
+        isFullSpanZoom &&
+        gpuSeriesKindByIndex[seriesIndex] === 'fullRawLine'
+      ) {
+        try {
+          dataStore.appendSeries(seriesIndex, points);
+          appendedGpuThisFrame.add(seriesIndex);
+        } catch {
+          // If the DataStore has not been initialized for this index (or any other error occurs),
+          // fall back to the normal full upload path later in render().
+        }
+      }
+
       raw.push(...points);
       runtimeRawBoundsByIndex[seriesIndex] = extendBoundsWithDataPoints(runtimeRawBoundsByIndex[seriesIndex], points);
     }
@@ -1168,15 +1200,23 @@ export function createRenderCoordinator(
         const nextBaseXDomain = computeBaseXDomain(currentOptions, runtimeRawBoundsByIndex);
         const span = nextBaseXDomain.max - nextBaseXDomain.min;
         if (Number.isFinite(span) && span > 0) {
-          const nextStart = ((prevVisibleXDomain.min - nextBaseXDomain.min) / span) * 100;
-          const nextEnd = ((prevVisibleXDomain.max - nextBaseXDomain.min) / span) * 100;
+          const nextStartRaw = ((prevVisibleXDomain.min - nextBaseXDomain.min) / span) * 100;
+          const nextEndRaw = ((prevVisibleXDomain.max - nextBaseXDomain.min) / span) * 100;
+          // Clamp defensively; ZoomState also clamps/orders internally.
+          const nextStart = Math.max(0, Math.min(100, nextStartRaw));
+          const nextEnd = Math.max(0, Math.min(100, nextEndRaw));
           zoomState!.setRange(nextStart, nextEnd);
         }
       }
     }
 
     recomputeRuntimeBaseSeries();
-    recomputeRenderSeries();
+    // Avoid unnecessary work: when zoom is disabled or full-span, `renderSeries` is just the baseline.
+    if (isFullSpanZoom) {
+      renderSeries = runtimeBaseSeries;
+    } else {
+      recomputeRenderSeries();
+    }
   };
 
   const appendData: RenderCoordinator['appendData'] = (seriesIndex, newPoints) => {
@@ -1188,6 +1228,12 @@ export function createRenderCoordinator(
     const s = currentOptions.series[seriesIndex]!;
     if (s.type === 'pie') {
       // Pie series are non-cartesian and currently not supported by streaming append.
+      if (!warnedPieAppendSeries.has(seriesIndex)) {
+        warnedPieAppendSeries.add(seriesIndex);
+        console.warn(
+          `RenderCoordinator.appendData(${seriesIndex}, ...): pie series are not supported by streaming append.`
+        );
+      }
       return;
     }
 
@@ -1529,9 +1575,26 @@ export function createRenderCoordinator(
         }
         case 'line': {
           // Always prepare the line stroke.
-          dataStore.setSeries(i, s.data);
+          // If we already appended into the DataStore this frame (fast-path), avoid a full re-upload.
+          if (!appendedGpuThisFrame.has(i)) {
+            dataStore.setSeries(i, s.data);
+          }
           const buffer = dataStore.getSeriesBuffer(i);
           lineRenderers[i].prepare(s, buffer, xScale, yScale);
+
+          // Track the GPU buffer kind for future append fast-path decisions.
+          const zoomRange = zoomState?.getRange() ?? null;
+          const isFullSpanZoom =
+            zoomRange == null ||
+            (Number.isFinite(zoomRange.start) &&
+              Number.isFinite(zoomRange.end) &&
+              zoomRange.start <= 0 &&
+              zoomRange.end >= 100);
+          if (isFullSpanZoom && s.sampling === 'none') {
+            gpuSeriesKindByIndex[i] = 'fullRawLine';
+          } else {
+            gpuSeriesKindByIndex[i] = 'other';
+          }
 
           // If `areaStyle` is provided on a line series, render a fill behind it.
           if (s.areaStyle) {

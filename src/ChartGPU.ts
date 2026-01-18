@@ -445,6 +445,9 @@ export async function createChartGPU(
 
   let hovered: HitTestMatch | null = null;
 
+  // Prevent spamming console.warn for repeated misuse.
+  const warnedPieAppendSeries = new Set<number>();
+
   let scheduledRaf: number | null = null;
   let lastConfigured: { width: number; height: number; format: GPUTextureFormat } | null = null;
 
@@ -1029,6 +1032,12 @@ export async function createChartGPU(
       const s = resolvedOptions.series[seriesIndex]!;
       if (s.type === 'pie') {
         // Pie series are non-cartesian and currently not supported by streaming append.
+        if (!warnedPieAppendSeries.has(seriesIndex)) {
+          warnedPieAppendSeries.add(seriesIndex);
+          console.warn(
+            `ChartGPU.appendData(${seriesIndex}, ...): pie series are not supported by streaming append. Use setOption(...) to replace pie data.`
+          );
+        }
         return;
       }
 
