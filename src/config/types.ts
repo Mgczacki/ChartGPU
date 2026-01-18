@@ -5,7 +5,7 @@
 import type { ThemeConfig } from '../themes/types';
 
 export type AxisType = 'value' | 'time' | 'category';
-export type SeriesType = 'line' | 'area' | 'bar' | 'scatter';
+export type SeriesType = 'line' | 'area' | 'bar' | 'scatter' | 'pie';
 
 /**
  * A single data point for a series.
@@ -110,7 +110,41 @@ export interface ScatterSeriesConfig extends SeriesConfigBase {
   readonly symbol?: ScatterSymbol;
 }
 
-export type SeriesConfig = LineSeriesConfig | AreaSeriesConfig | BarSeriesConfig | ScatterSeriesConfig;
+export type PieDataItem = Readonly<{ value: number; name: string }>;
+
+export interface PieItemStyleConfig {
+  readonly borderRadius?: number;
+  readonly borderWidth?: number;
+}
+
+export type PieRadius = number | string | readonly [inner: number | string, outer: number | string];
+export type PieCenter = readonly [x: number | string, y: number | string];
+
+export interface PieSeriesConfig extends Omit<SeriesConfigBase, 'data'> {
+  readonly type: 'pie';
+  /**
+   * Radius in CSS pixels, as a percent string (e.g. '50%'), or a tuple [inner, outer].
+   * When inner > 0, the series renders as a donut.
+   */
+  readonly radius?: PieRadius;
+  /**
+   * Center position as [x, y] in CSS pixels or percent strings.
+   */
+  readonly center?: PieCenter;
+  /**
+   * Start angle in degrees (default: 90 = top).
+   */
+  readonly startAngle?: number;
+  readonly data: ReadonlyArray<PieDataItem>;
+  readonly itemStyle?: PieItemStyleConfig;
+}
+
+export type SeriesConfig =
+  | LineSeriesConfig
+  | AreaSeriesConfig
+  | BarSeriesConfig
+  | ScatterSeriesConfig
+  | PieSeriesConfig;
 
 /**
  * Parameters passed to tooltip formatter function.
