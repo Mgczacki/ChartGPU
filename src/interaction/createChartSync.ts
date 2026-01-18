@@ -1,4 +1,4 @@
-import type { ChartGPU } from '../ChartGPU';
+import type { ChartGPU, ChartGPUCrosshairMovePayload } from '../ChartGPU';
 
 export type DisconnectCharts = () => void;
 
@@ -20,19 +20,22 @@ export function connectCharts(charts: ChartGPU[]): DisconnectCharts {
     for (const chart of charts) {
       if (chart === sourceChart) continue;
       if (chart.disposed) continue;
-      chart.setInteractionX(x, connectionToken);
+      chart.setCrosshairX(x, connectionToken);
     }
   };
 
   for (const chart of charts) {
     if (chart.disposed) continue;
 
-    const unsub = chart.onInteractionXChange((x, source) => {
+    const onCrosshairMove = (payload: ChartGPUCrosshairMovePayload): void => {
       if (disconnected) return;
-      if (source === connectionToken) return;
+      if (payload.source === connectionToken) return;
       if (chart.disposed) return;
-      broadcast(chart, x);
-    });
+      broadcast(chart, payload.x);
+    };
+
+    chart.on('crosshairMove', onCrosshairMove);
+    const unsub = (): void => chart.off('crosshairMove', onCrosshairMove);
     unsubscribeFns.push(unsub);
   }
 
@@ -46,7 +49,7 @@ export function connectCharts(charts: ChartGPU[]): DisconnectCharts {
     // Clear any “stuck” remote interactions.
     for (const chart of charts) {
       if (chart.disposed) continue;
-      chart.setInteractionX(null, connectionToken);
+      chart.setCrosshairX(null, connectionToken);
     }
   };
 }

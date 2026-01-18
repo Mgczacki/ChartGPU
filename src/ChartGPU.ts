@@ -15,7 +15,9 @@ export interface ChartGPUInstance {
   setOption(options: ChartGPUOptions): void;
   resize(): void;
   dispose(): void;
+  on(eventName: 'crosshairMove', callback: ChartGPUCrosshairMoveCallback): void;
   on(eventName: ChartGPUEventName, callback: ChartGPUEventCallback): void;
+  off(eventName: 'crosshairMove', callback: ChartGPUCrosshairMoveCallback): void;
   off(eventName: ChartGPUEventName, callback: ChartGPUEventCallback): void;
   /**
    * Gets the current “interaction x” in domain units (or `null` when inactive).
@@ -31,6 +33,10 @@ export interface ChartGPUInstance {
    */
   setInteractionX(x: number | null, source?: unknown): void;
   /**
+   * Alias for `setInteractionX(...)` for chart sync semantics.
+   */
+  setCrosshairX(x: number | null, source?: unknown): void;
+  /**
    * Subscribes to interaction x changes (domain units).
    *
    * Returns an unsubscribe function.
@@ -42,7 +48,7 @@ export interface ChartGPUInstance {
 // remains the creation API exported from `src/index.ts`).
 export type ChartGPU = ChartGPUInstance;
 
-export type ChartGPUEventName = 'click' | 'mouseover' | 'mouseout';
+export type ChartGPUEventName = 'click' | 'mouseover' | 'mouseout' | 'crosshairMove';
 
 export type ChartGPUEventPayload = Readonly<{
   readonly seriesIndex: number | null;
@@ -52,9 +58,18 @@ export type ChartGPUEventPayload = Readonly<{
   readonly event: PointerEvent;
 }>;
 
+export type ChartGPUCrosshairMovePayload = Readonly<{
+  readonly x: number | null;
+  readonly source?: unknown;
+}>;
+
 export type ChartGPUEventCallback = (payload: ChartGPUEventPayload) => void;
 
-type ListenerRegistry = Readonly<Record<ChartGPUEventName, Set<ChartGPUEventCallback>>>;
+export type ChartGPUCrosshairMoveCallback = (payload: ChartGPUCrosshairMovePayload) => void;
+
+type AnyChartGPUEventCallback = ChartGPUEventCallback | ChartGPUCrosshairMoveCallback;
+
+type ListenerRegistry = Readonly<Record<ChartGPUEventName, Set<AnyChartGPUEventCallback>>>;
 
 type TapCandidate = {
   readonly pointerId: number;
@@ -157,6 +172,7 @@ export async function createChartGPU(
   let gpuContext: GPUContext | null = null;
   let coordinator: RenderCoordinator | null = null;
   let coordinatorTargetFormat: GPUTextureFormat | null = null;
+  let unsubscribeCoordinatorInteractionXChange: (() => void) | null = null;
 
   let currentOptions: ChartGPUOptions = options;
   let resolvedOptions: ResolvedChartGPUOptions = {
@@ -172,6 +188,7 @@ export async function createChartGPU(
     click: new Set<ChartGPUEventCallback>(),
     mouseover: new Set<ChartGPUEventCallback>(),
     mouseout: new Set<ChartGPUEventCallback>(),
+    crosshairMove: new Set<ChartGPUCrosshairMoveCallback>(),
   };
 
   let tapCandidate: TapCandidate | null = null;
@@ -205,13 +222,34 @@ export async function createChartGPU(
     });
   };
 
+  const unbindCoordinatorInteractionXChange = (): void => {
+    if (!unsubscribeCoordinatorInteractionXChange) return;
+    try {
+      unsubscribeCoordinatorInteractionXChange();
+    } finally {
+      unsubscribeCoordinatorInteractionXChange = null;
+    }
+  };
+
+  const bindCoordinatorInteractionXChange = (): void => {
+    unbindCoordinatorInteractionXChange();
+    if (disposed) return;
+    if (!coordinator) return;
+
+    unsubscribeCoordinatorInteractionXChange = coordinator.onInteractionXChange((x, source) => {
+      emit('crosshairMove', { x, source });
+    });
+  };
+
   const recreateCoordinator = (): void => {
     if (disposed) return;
     if (!gpuContext || !gpuContext.initialized) return;
 
+    unbindCoordinatorInteractionXChange();
     coordinator?.dispose();
     coordinator = createRenderCoordinator(gpuContext, resolvedOptions, { onRequestRender: requestRender });
     coordinatorTargetFormat = gpuContext.preferredFormat;
+    bindCoordinatorInteractionXChange();
   };
 
   const resizeInternal = (shouldRequestRenderAfterChanges: boolean): void => {
@@ -363,9 +401,12 @@ export async function createChartGPU(
     };
   };
 
-  const emit = (eventName: ChartGPUEventName, payload: ChartGPUEventPayload): void => {
+  const emit = (
+    eventName: ChartGPUEventName,
+    payload: ChartGPUEventPayload | ChartGPUCrosshairMovePayload
+  ): void => {
     if (disposed) return;
-    for (const cb of listeners[eventName]) cb(payload);
+    for (const cb of listeners[eventName]) (cb as (p: typeof payload) => void)(payload);
   };
 
   const setHovered = (next: NearestPointMatch | null, event: PointerEvent): void => {
@@ -505,6 +546,7 @@ export async function createChartGPU(
     try {
       // Requirement: dispose order: cancel RAF, coordinator.dispose(), gpuContext.destroy(), remove canvas.
       cancelPendingFrame();
+      unbindCoordinatorInteractionXChange();
       coordinator?.dispose();
       coordinator = null;
       coordinatorTargetFormat = null;
@@ -525,6 +567,7 @@ export async function createChartGPU(
       listeners.click.clear();
       listeners.mouseover.clear();
       listeners.mouseout.clear();
+      listeners.crosshairMove.clear();
 
       gpuContext = null;
       canvas.remove();
@@ -553,16 +596,20 @@ export async function createChartGPU(
     dispose,
     on(eventName, callback) {
       if (disposed) return;
-      listeners[eventName].add(callback);
+      listeners[eventName].add(callback as AnyChartGPUEventCallback);
     },
     off(eventName, callback) {
-      listeners[eventName].delete(callback);
+      listeners[eventName].delete(callback as AnyChartGPUEventCallback);
     },
     getInteractionX() {
       if (disposed) return null;
       return coordinator?.getInteractionX() ?? null;
     },
     setInteractionX(x, source) {
+      if (disposed) return;
+      coordinator?.setInteractionX(x, source);
+    },
+    setCrosshairX(x, source) {
       if (disposed) return;
       coordinator?.setInteractionX(x, source);
     },

@@ -8,6 +8,13 @@ export const version = '1.0.0';
 export { ChartGPU } from './ChartGPU';
 export type { ChartGPUInstance } from './ChartGPU';
 export type {
+  ChartGPUEventName,
+  ChartGPUEventPayload,
+  ChartGPUCrosshairMovePayload,
+  ChartGPUEventCallback,
+  ChartGPUCrosshairMoveCallback,
+} from './ChartGPU';
+export type {
   AreaStyleConfig,
   AxisConfig,
   AxisType,
