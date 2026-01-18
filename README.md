@@ -53,13 +53,7 @@ To resolve user options against defaults, use [`OptionResolver.resolve(...)`](sr
 
 ## Scales (Pure utilities)
 
-ChartGPU also exports a small pure linear scale utility for mapping numeric domains to numeric ranges. See [`scales.ts`](src/utils/scales.ts) and the “Scales” section in [`docs/API.md`](docs/API.md#scales-pure-utilities).
-
-**Behavior notes (essential):**
-
-- **Chainable setters**: `domain(min, max)` and `range(min, max)` return the same scale instance for chaining.
-- **`scale(value)` / `invert(pixel)`**: no clamping; values outside the configured domain/range extrapolate.
-- **Zero-span domain**: if `min === max`, `scale` returns the midpoint of the range and `invert` returns `min` for any input.
+ChartGPU exports small pure scale utilities for mapping domains to numeric ranges: a linear scale (`createLinearScale()`) and a category scale (`createCategoryScale()`). See [`docs/API.md#scales-pure-utilities`](docs/API.md#scales-pure-utilities) and [`src/utils/scales.ts`](src/utils/scales.ts).
 
 ## Browser Compatibility
 
