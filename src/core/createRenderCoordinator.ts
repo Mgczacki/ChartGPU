@@ -1055,7 +1055,7 @@ export function createRenderCoordinator(
     if (overlay && overlayContainer) {
       const canvas = gpuContext.canvas;
       // IMPORTANT: overlay positioning must be done in *CSS pixels* and in the overlayContainer's
-      // coordinate space (its padding box). Using `canvas.width / dpr` + `getBoundingClientRect()`
+      // coordinate space (its padding box). Using   `canvas.width / dpr` + `getBoundingClientRect()`
       // deltas can drift under CSS scaling/zoom and misalign with container padding/border.
       const canvasCssWidth = canvas.clientWidth;
       const canvasCssHeight = canvas.clientHeight;

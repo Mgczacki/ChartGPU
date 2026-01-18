@@ -130,6 +130,7 @@ See [`types.ts`](../src/config/types.ts) for the full type definition.
     - Pie series do **not** participate in cartesian x/y bounds derivation (they do not affect `xAxis`/`yAxis` min/max auto-derivation).
     - Pie series do **not** participate in cartesian hit-testing utilities (see [`findNearestPoint.ts`](../src/interaction/findNearestPoint.ts) and [`findPointsAtX.ts`](../src/interaction/findPointsAtX.ts)).
     - Pie slices **do** support hover hit-testing for ChartGPU’s internal tooltip and ChartGPU instance events (`'click'`, `'mouseover'`, `'mouseout'`) via [`findPieSlice.ts`](../src/interaction/findPieSlice.ts) (wired in [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts) and [`ChartGPU.ts`](../src/ChartGPU.ts)).
+  - **Pie-only charts**: when `series` contains only `type: 'pie'`, the render coordinator skips cartesian x/y axis rendering and does not render the DOM tick value labels. See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts).
   - **Slice colors**: each `PieDataItem` supports `color?: string`. Color precedence is **`item.color`** when provided, otherwise a palette fallback (see [`resolveOptions`](../src/config/OptionResolver.ts)). For a working example, see [`examples/pie/`](../examples/pie/).
 - **`BarItemStyleConfig`**: bar styling options. See [`types.ts`](../src/config/types.ts).
   - **`borderRadius?: number`**
@@ -139,7 +140,7 @@ See [`types.ts`](../src/config/types.ts) for the full type definition.
 **Axis configuration (essential):**
 
 - **`AxisConfig`**: configuration for `xAxis` / `yAxis`. See [`types.ts`](../src/config/types.ts).
-- **`AxisConfig.name?: string`**: renders an axis title when provided (and non-empty after `trim()`): x-axis titles are centered below x-axis tick labels, and y-axis titles are rotated \(-90°\) and placed left of y-axis tick labels; titles can be clipped if `grid.bottom` / `grid.left` margins are too small.
+- **`AxisConfig.name?: string`**: renders an axis title for cartesian charts when provided (and non-empty after `trim()`): x-axis titles are centered below x-axis tick labels, and y-axis titles are rotated \(-90°\) and placed left of y-axis tick labels; titles can be clipped if `grid.bottom` / `grid.left` margins are too small. See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts).
 - **Axis title styling**: titles are rendered via the internal DOM text overlay and use the resolved theme’s `textColor` and `fontFamily` with slightly larger, bold text (label elements also set `dir='auto'`).
 
 **Tooltip configuration (type definitions):**
@@ -448,7 +449,7 @@ An internal DOM helper for rendering text labels above the canvas using an absol
   - `dispose(): void`
 - **Coordinates**: `x` / `y` are in CSS pixels relative to the container’s top-left corner.
 - **Pointer events**: the overlay uses `pointer-events: none` so it won’t intercept mouse/touch input.
-- **Current usage**: used by the render coordinator to render numeric axis tick value labels above the canvas. See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts).
+- **Current usage**: used by the render coordinator to render numeric cartesian axis tick value labels above the canvas (pie-only charts skip these labels). See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts).
 
 ### Legend (internal / contributor notes)
 
