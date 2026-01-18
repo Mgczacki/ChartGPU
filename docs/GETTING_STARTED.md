@@ -107,6 +107,8 @@ Chart instances can also show an internal HTML tooltip overlay on hover when `Ch
 
 Chart instances also render a built-in hover highlight ring when the pointer is inside the plot grid and a nearest data point can be determined; this is part of the internal render pipeline in [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts) (see hover highlight notes in [`API.md`](./API.md#highlight-renderer-internal--contributor-notes)).
 
+Chart instances enable animation by default (`ChartGPUOptions.animation` defaults to enabled when omitted). Series marks animate on first render; set `animation: false` to disable. See [`API.md`](./API.md#animation-type-definitions) for animation configuration details.
+
 Chart instances expose event listeners via `on()` and `off()` methods for handling clicks, hover interactions, and crosshair syncing (`'click'`, `'mouseover'`, `'mouseout'`, `'crosshairMove'`). See [`API.md`](./API.md#event-handling) for event handling documentation (note that `'crosshairMove'` uses a minimal payload `{ x, source? }` and is emitted for both pointer-driven and programmatic interaction-x updates).
 
 The `hello-world` example demonstrates continuous rendering by animating the clear color through the full color spectrum, proving that the render loop is working correctly. It also includes an example-only WGSL compilation smoke-check via `GPUShaderModule.getCompilationInfo()` for several shaders; see [hello-world/main.ts](../examples/hello-world/main.ts) for implementation.

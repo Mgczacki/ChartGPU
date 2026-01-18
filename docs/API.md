@@ -186,11 +186,12 @@ See [`types.ts`](../src/config/types.ts) for the full type definition.
 **Animation (type definitions):**
 
 - **`ChartGPUOptions.animation?: AnimationConfig | boolean`**: optional animation configuration.
+  - **Default**: when omitted, animation is enabled with defaults (equivalent to `true`). See [`OptionResolver.ts`](../src/config/OptionResolver.ts).
   - **Disablement**: set to `false` to disable all animation.
-  - **Default**: when omitted, animation is enabled with defaults (equivalent to `true`).
   - **Defaults**: when enabled, `AnimationConfig.duration` defaults to `300`ms when omitted.
 - **`AnimationConfig`**: supports optional `duration?: number` (ms), `easing?: 'linear' | 'cubicOut' | 'cubicInOut' | 'bounceOut'`, and `delay?: number` (ms). See [`types.ts`](../src/config/types.ts).
   - **Built-in easing implementations (internal)**: see [`easing.ts`](../src/utils/easing.ts) and the name→function helper `getEasing(...)`.
+- **Initial-load intro animation**: when animation is enabled, series marks animate on first render. Axes, grid lines, and labels render immediately (not animated). Per-series effects: line/area series reveal left-to-right via plot scissor; bar series grow upward from baseline; pie slices expand radius; scatter points fade in. The intro animation requests frames internally during the transition. See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts). Streaming demos may prefer disabling animation (`animation: false`).
 
 ### Animation controller (internal)
 
