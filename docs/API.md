@@ -379,6 +379,9 @@ See [`findNearestPoint.ts`](../src/interaction/findNearestPoint.ts).
 - **Function**: `findNearestPoint(series: ReadonlyArray<ResolvedSeriesConfig>, x: number, y: number, xScale: LinearScale, yScale: LinearScale, maxDistance?: number): NearestPointMatch | null`
 - **Returns**: `null` or `{ seriesIndex, dataIndex, point, distance }`
 - **Sorted-x requirement**: each series must be sorted by increasing `x` in domain space for the binary search path to be correct.
+- **Scatter hit-testing (Story 4.10)**:
+  - Scatter series use distance-based hit-testing but **expand the effective hit radius** based on symbol size so larger markers are easier to hover.
+  - Size uses the same precedence as the scatter renderer (per-point `size` → `series.symbolSize` → default), and is interpreted as a **radius in CSS pixels** when your `xScale`/`yScale` range-space is in CSS pixels.
 - **Bar hit-testing (Story 4.6)**:
   - Bar series use **bounding-box (rect) hit detection** in `xScale`/`yScale` range-space (not point distance).
   - A bar is only considered a match when the cursor is **inside** its rect bounds (`isPointInBar(...)` in [`findNearestPoint.ts`](../src/interaction/findNearestPoint.ts)).
