@@ -142,6 +142,8 @@ For a concrete reference renderer, see [`createLineRenderer.ts`](src/renderers/c
 
 The associated shader lives in [`line.wgsl`](src/shaders/line.wgsl).
 
+For a crosshair overlay renderer reference, see the internal [`createCrosshairRenderer.ts`](src/renderers/createCrosshairRenderer.ts) and its shader [`crosshair.wgsl`](src/shaders/crosshair.wgsl). (This renderer is currently internal and not exported from `src/index.ts`; contributor notes live in [`docs/API.md`](docs/API.md).)
+
 **WGSL imports (Contributor notes):** WGSL is imported as a raw string via Vite’s `?raw` query (e.g. `*.wgsl?raw`). TypeScript support for this pattern is provided by [`wgsl-raw.d.ts`](src/wgsl-raw.d.ts).
 
 Notes for contributors:
