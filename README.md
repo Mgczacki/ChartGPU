@@ -12,6 +12,7 @@ ChartGPU leverages WebGPU to provide hardware-accelerated rendering for complex 
 - **TypeScript**: Full type safety and excellent IDE support
 - **High Performance**: Optimized for rendering large datasets
 - **Browser Support**: Works in Chrome 113+, Edge 113+, and Safari 18+
+- **Data update transitions**: subsequent `setOption(...)` calls that change series data can animate transitions when `ChartGPUOptions.animation` is enabled (see [`examples/data-update-animation/`](examples/data-update-animation/) and internal implementation in [`createRenderCoordinator.ts`](src/core/createRenderCoordinator.ts))
 - **Live streaming**: append points at runtime via `ChartGPUInstance.appendData(...)` with optional `ChartGPUOptions.autoScroll` behavior (see [`examples/live-streaming/`](examples/live-streaming/) and [API.md](docs/API.md))
 - **Data zoom (x-axis)**: inside zoom gestures and optional slider UI via `ChartGPUOptions.dataZoom` (see [API.md](docs/API.md) and [ChartGPU.ts](src/ChartGPU.ts))
 - **Zoom-aware sampling (cartesian)**: when sampling is enabled, ChartGPU resamples the visible x-range on zoom (debounced ~100ms). Axis auto-bounds remain derived from raw (unsampled) series data. See [API.md](docs/API.md).
