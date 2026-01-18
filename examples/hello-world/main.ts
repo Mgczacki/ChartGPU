@@ -2,6 +2,7 @@ import { GPUContext } from '../../src/index';
 import lineWgsl from '../../src/shaders/line.wgsl?raw';
 import areaWgsl from '../../src/shaders/area.wgsl?raw';
 import scatterWgsl from '../../src/shaders/scatter.wgsl?raw';
+import pieWgsl from '../../src/shaders/pie.wgsl?raw';
 
 /**
  * Hello World example - Animated clear color
@@ -107,6 +108,20 @@ async function main() {
           .map((m) => `${m.lineNum ?? 0}:${m.linePos ?? 0} ${m.message}`)
           .join('\n');
         throw new Error(`scatter.wgsl compilation failed:\n${formatted}`);
+      }
+    }
+
+    // Example-only smoke check: compile the pie shader at runtime.
+    const pieShaderModule = device.createShaderModule({ code: pieWgsl, label: 'pie.wgsl' });
+    const getPieCompilationInfo = pieShaderModule.getCompilationInfo?.bind(pieShaderModule);
+    if (getPieCompilationInfo) {
+      const info = await getPieCompilationInfo();
+      const errors = info.messages.filter((m) => m.type === 'error');
+      if (errors.length > 0) {
+        const formatted = errors
+          .map((m) => `${m.lineNum ?? 0}:${m.linePos ?? 0} ${m.message}`)
+          .join('\n');
+        throw new Error(`pie.wgsl compilation failed:\n${formatted}`);
       }
     }
 
