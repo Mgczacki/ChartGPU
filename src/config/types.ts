@@ -199,6 +199,20 @@ export interface TooltipConfig {
   readonly formatter?: ((params: TooltipParams) => string) | ((params: ReadonlyArray<TooltipParams>) => string);
 }
 
+/**
+ * Animation configuration for transitions (type definitions only).
+ *
+ * - `duration` is in milliseconds (default: 300).
+ * - Set `ChartGPUOptions.animation = false` to disable all animation.
+ */
+export interface AnimationConfig {
+  /** Animation duration in ms (default: 300). */
+  readonly duration?: number;
+  readonly easing?: 'linear' | 'cubicOut' | 'cubicInOut' | 'bounceOut';
+  /** Animation delay in ms. */
+  readonly delay?: number;
+}
+
 export interface ChartGPUOptions {
   readonly grid?: GridConfig;
   readonly xAxis?: AxisConfig;
@@ -221,5 +235,12 @@ export interface ChartGPUOptions {
    */
   readonly palette?: ReadonlyArray<string>;
   readonly tooltip?: TooltipConfig;
+  /**
+   * Animation configuration for transitions.
+   *
+   * - `false` disables all animation.
+   * - `true` enables animation with defaults.
+   */
+  readonly animation?: AnimationConfig | boolean;
 }
 

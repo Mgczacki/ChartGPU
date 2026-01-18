@@ -16,6 +16,7 @@ export type {
 } from './ChartGPU';
 export type {
   AreaStyleConfig,
+  AnimationConfig,
   BarItemStyleConfig,
   AxisConfig,
   AxisType,
