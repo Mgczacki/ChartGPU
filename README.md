@@ -38,6 +38,30 @@ await ChartGPU.create(container, {
 
 `npm install chartgpu`
 
+## React Integration
+
+React bindings are available via [`chartgpu-react`](https://github.com/ChartGPU/chartgpu-react):
+
+```bash
+npm install chartgpu-react chartgpu react react-dom
+```
+
+```tsx
+import { ChartGPUChart } from 'chartgpu-react';
+
+function MyChart() {
+  return (
+    <ChartGPUChart
+      options={{
+        series: [{ type: 'line', data: [[0, 1], [1, 3], [2, 2]] }],
+      }}
+    />
+  );
+}
+```
+
+See the [chartgpu-react repository](https://github.com/ChartGPU/chartgpu-react) for full documentation and examples.
+
 ## Browser support (WebGPU required)
 
 - Chrome 113+ or Edge 113+ (WebGPU enabled by default)
