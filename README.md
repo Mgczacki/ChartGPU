@@ -2,8 +2,8 @@
 
 High-performance charts powered by WebGPU.
 
-[![npm](https://img.shields.io/npm/v/chartgpu?label=npm&style=flat)](https://www.npmjs.com/package/chartgpu)
-[![license](https://img.shields.io/npm/l/chartgpu?style=flat)](https://github.com/hunterg325/ChartGPU/blob/main/LICENSE)
+![npm](https://img.shields.io/npm/v/chartgpu)
+![license](https://img.shields.io/npm/l/chartgpu)
 [![bundle size](https://img.shields.io/bundlephobia/minzip/chartgpu?label=bundle%20size&style=flat)](https://bundlephobia.com/package/chartgpu)
 
 ChartGPU is a TypeScript charting library built on WebGPU for smooth, interactive rendering—especially when you have lots of data.
