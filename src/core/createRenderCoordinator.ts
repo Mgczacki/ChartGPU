@@ -16,6 +16,7 @@ import { createLineRenderer } from '../renderers/createLineRenderer';
 import { createBarRenderer } from '../renderers/createBarRenderer';
 import { createScatterRenderer } from '../renderers/createScatterRenderer';
 import { createPieRenderer } from '../renderers/createPieRenderer';
+import { createCandlestickRenderer } from '../renderers/createCandlestickRenderer';
 import { createCrosshairRenderer } from '../renderers/createCrosshairRenderer';
 import type { CrosshairRenderOptions } from '../renderers/createCrosshairRenderer';
 import { createHighlightRenderer } from '../renderers/createHighlightRenderer';
@@ -1760,6 +1761,7 @@ export function createRenderCoordinator(
   const lineRenderers: Array<ReturnType<typeof createLineRenderer>> = [];
   const scatterRenderers: Array<ReturnType<typeof createScatterRenderer>> = [];
   const pieRenderers: Array<ReturnType<typeof createPieRenderer>> = [];
+  const candlestickRenderers: Array<ReturnType<typeof createCandlestickRenderer>> = [];
   const barRenderer = createBarRenderer(device, { targetFormat });
 
   const ensureAreaRendererCount = (count: number): void => {
@@ -1802,10 +1804,21 @@ export function createRenderCoordinator(
     }
   };
 
+  const ensureCandlestickRendererCount = (count: number): void => {
+    while (candlestickRenderers.length > count) {
+      const r = candlestickRenderers.pop();
+      r?.dispose();
+    }
+    while (candlestickRenderers.length < count) {
+      candlestickRenderers.push(createCandlestickRenderer(device, { targetFormat }));
+    }
+  };
+
   ensureAreaRendererCount(currentOptions.series.length);
   ensureLineRendererCount(currentOptions.series.length);
   ensureScatterRendererCount(currentOptions.series.length);
   ensurePieRendererCount(currentOptions.series.length);
+  ensureCandlestickRendererCount(currentOptions.series.length);
 
   const assertNotDisposed = (): void => {
     if (disposed) throw new Error('RenderCoordinator is disposed.');
@@ -1914,6 +1927,7 @@ export function createRenderCoordinator(
     ensureLineRendererCount(nextCount);
     ensureScatterRendererCount(nextCount);
     ensurePieRendererCount(nextCount);
+    ensureCandlestickRendererCount(nextCount);
 
     // When the series count shrinks, explicitly destroy per-index GPU buffers for removed series.
     // This avoids recreating the entire DataStore and keeps existing buffers for retained indices.
@@ -2097,12 +2111,9 @@ export function createRenderCoordinator(
             case 'line':
             case 'area':
             case 'bar':
-            case 'scatter': {
-              if (s.data.length > 0) return true;
-              break;
-            }
+            case 'scatter':
             case 'candlestick': {
-              // Candlestick not yet implemented, skip (no drawable marks).
+              if (s.data.length > 0) return true;
               break;
             }
             default:
@@ -2557,7 +2568,8 @@ export function createRenderCoordinator(
           break;
         }
         case 'candlestick': {
-          // Candlestick series are not yet implemented; skip rendering.
+          // Candlestick renderer handles clipping internally, no intro animation for now.
+          candlestickRenderers[i].prepare(s, s.data, xScale, yScale, gridArea, currentOptions.theme.backgroundColor);
           break;
         }
         default:
@@ -2618,6 +2630,11 @@ export function createRenderCoordinator(
       }
     }
     barRenderer.render(pass);
+    for (let i = 0; i < seriesForRender.length; i++) {
+      if (seriesForRender[i].type === 'candlestick') {
+        candlestickRenderers[i].render(pass);
+      }
+    }
     for (let i = 0; i < seriesForRender.length; i++) {
       if (seriesForRender[i].type === 'scatter') {
         scatterRenderers[i].render(pass);
@@ -2834,6 +2851,11 @@ export function createRenderCoordinator(
       pieRenderers[i].dispose();
     }
     pieRenderers.length = 0;
+
+    for (let i = 0; i < candlestickRenderers.length; i++) {
+      candlestickRenderers[i].dispose();
+    }
+    candlestickRenderers.length = 0;
 
     barRenderer.dispose();
 
