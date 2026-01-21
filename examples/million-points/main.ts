@@ -203,8 +203,10 @@ async function main(): Promise<void> {
   if (!(container instanceof HTMLElement)) throw new Error('Chart container (#chart) not found');
 
   const samplingEnabledEl = document.getElementById('samplingEnabled');
+  const benchmarkModeEl = document.getElementById('benchmarkMode');
   const resetZoomEl = document.getElementById('resetZoom');
   if (!(samplingEnabledEl instanceof HTMLInputElement)) throw new Error('samplingEnabled checkbox not found');
+  if (!(benchmarkModeEl instanceof HTMLInputElement)) throw new Error('benchmarkMode checkbox not found');
   if (!(resetZoomEl instanceof HTMLButtonElement)) throw new Error('resetZoom button not found');
 
   // Ensure numeric readout is consistent (HTML already sets this, but keep it robust).
@@ -365,7 +367,9 @@ async function main(): Promise<void> {
 
     if (coordinator && coordinatorTargetFormat !== preferredFormat) {
       coordinator.dispose();
-      coordinator = createRenderCoordinator(gpuContext!, resolvedOptions);
+      coordinator = createRenderCoordinator(gpuContext!, resolvedOptions, {
+        onRequestRender: requestRender,
+      });
       coordinatorTargetFormat = preferredFormat;
       syncSliderUi();
     }
@@ -376,7 +380,9 @@ async function main(): Promise<void> {
     const prevZoom = coordinator?.getZoomRange() ?? null;
 
     coordinator?.dispose();
-    coordinator = createRenderCoordinator(gpuContext, resolvedOptions);
+    coordinator = createRenderCoordinator(gpuContext, resolvedOptions, {
+      onRequestRender: requestRender,
+    });
     coordinatorTargetFormat = gpuContext.preferredFormat;
 
     // Best-effort preserve zoom window.
@@ -406,6 +412,7 @@ async function main(): Promise<void> {
     return r;
   })();
 
+  let benchmarkMode = true; // Matches checkbox default
   let rafId: number | null = null;
   const frameDtMs = createRollingStat(60);
   const renderMs = createRollingStat(60);
@@ -481,11 +488,20 @@ async function main(): Promise<void> {
   };
 
   /**
-   * Continuous requestAnimationFrame loop: renders every frame for sustained performance measurement.
-   * Real apps typically render on-demand (data/zoom change) to save battery.
+   * Schedules a single frame render (coalescing multiple requests).
+   * Used for render-on-demand when not in benchmark mode.
    */
-  const renderLoop = (ts: number): void => {
-    rafId = requestAnimationFrame(renderLoop);
+  const requestRender = (): void => {
+    if (rafId !== null) return; // Already scheduled (coalescing)
+    rafId = requestAnimationFrame(renderFrame);
+  };
+
+  /**
+   * Single-shot render frame: measures performance and renders once.
+   * Auto-schedules next frame only if in benchmark mode for continuous loop.
+   */
+  const renderFrame = (ts: number): void => {
+    rafId = null; // Clear at start (single-shot pattern)
 
     if (lastFrameTs > 0) frameDtMs.push(ts - lastFrameTs);
     lastFrameTs = ts;
@@ -499,6 +515,11 @@ async function main(): Promise<void> {
     }
 
     updateStatsDom(ts);
+
+    // Auto-schedule next frame only if in benchmark mode (continuous loop)
+    if (benchmarkMode) {
+      rafId = requestAnimationFrame(renderFrame);
+    }
   };
 
   /**
@@ -562,8 +583,17 @@ async function main(): Promise<void> {
       coordinator?.setZoomRange(0, 100);
     });
 
-    // Start loop.
-    rafId = requestAnimationFrame(renderLoop);
+    benchmarkModeEl.addEventListener('change', () => {
+      benchmarkMode = benchmarkModeEl.checked;
+      if (benchmarkMode && rafId === null) {
+        // Entering benchmark mode - start the continuous loop
+        rafId = requestAnimationFrame(renderFrame);
+      }
+      // If exiting benchmark mode, the loop will stop after the current frame
+    });
+
+    // Start loop (continuous if benchmark mode, otherwise idle until interaction).
+    rafId = requestAnimationFrame(renderFrame);
 
     window.addEventListener('beforeunload', cleanup);
     import.meta.hot?.dispose(cleanup);
