@@ -25,7 +25,7 @@ ChartGPU is a TypeScript charting library built on WebGPU for smooth, interactiv
 ## Highlights
 
 - 🚀 WebGPU-accelerated rendering for high FPS with large datasets
-- 📈 Multiple series types: line, area, bar, scatter, pie
+- 📈 Multiple series types: line, area, bar, scatter, pie, candlestick
 - 🧭 Built-in interaction: hover highlight, tooltip, crosshair
 - 🔁 Streaming updates via `appendData(...)` (cartesian series)
 - 🔍 X-axis zoom (inside gestures + optional slider UI)
@@ -92,6 +92,7 @@ flowchart TB
     RenderPass --> ScatterR["Scatter"]
     RenderPass --> LineR["Line"]
     RenderPass --> PieR["Pie"]
+    RenderPass --> CandlestickR["Candlestick"]
     RenderPass --> CrosshairR["Crosshair overlay"]
     RenderPass --> HighlightR["Hover highlight overlay"]
     RenderPass --> AxisR["Axes/ticks"]
@@ -104,6 +105,7 @@ flowchart TB
     ScatterR --> scatterWGSL["scatter.wgsl"]
     LineR --> lineWGSL["line.wgsl"]
     PieR --> pieWGSL["pie.wgsl"]
+    CandlestickR --> candlestickWGSL["candlestick.wgsl"]
     CrosshairR --> crosshairWGSL["crosshair.wgsl"]
     HighlightR --> highlightWGSL["highlight.wgsl"]
   end
@@ -120,6 +122,12 @@ flowchart TB
 ## Demo
 
 ![ChartGPU demo](https://raw.githubusercontent.com/hunterg325/ChartGPU/main/docs/assets/chart-gpu-demo.gif)
+
+### Candlestick Charts
+
+Financial OHLC (open-high-low-close) candlestick rendering with classic/hollow style toggle and color customization.
+
+![Candlestick chart example](docs/assets/candle-stick-example.png)
 
 ## Quick start
 
