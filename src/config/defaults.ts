@@ -1,4 +1,11 @@
-import type { AreaStyleConfig, ChartGPUOptions, GridConfig, LineStyleConfig } from './types';
+import type {
+  AreaStyleConfig,
+  CandlestickItemStyleConfig,
+  CandlestickStyle,
+  ChartGPUOptions,
+  GridConfig,
+  LineStyleConfig,
+} from './types';
 
 export const defaultGrid = {
   left: 60,
@@ -27,6 +34,22 @@ export const defaultLineStyle = {
 export const defaultAreaStyle = {
   opacity: 0.25,
 } as const satisfies Required<Omit<AreaStyleConfig, 'color'>>;
+
+export const candlestickDefaults = {
+  style: 'classic' as CandlestickStyle,
+  itemStyle: {
+    upColor: '#22c55e',
+    downColor: '#ef4444',
+    upBorderColor: '#22c55e',
+    downBorderColor: '#ef4444',
+    borderWidth: 1,
+  } as const satisfies Required<CandlestickItemStyleConfig>,
+  barWidth: '80%' as const,
+  barMinWidth: 1,
+  barMaxWidth: 50,
+  sampling: 'ohlc' as const,
+  samplingThreshold: 5000,
+} as const;
 
 export const defaultOptions = {
   grid: defaultGrid,

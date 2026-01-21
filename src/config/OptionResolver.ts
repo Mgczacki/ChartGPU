@@ -1,6 +1,9 @@
 import type {
   AreaStyleConfig,
   AxisConfig,
+  CandlestickItemStyleConfig,
+  CandlestickSeriesConfig,
+  CandlestickStyle,
   ChartGPUOptions,
   DataPoint,
   DataPointTuple,
@@ -15,7 +18,7 @@ import type {
   ScatterSeriesConfig,
   SeriesSampling,
 } from './types';
-import { defaultAreaStyle, defaultLineStyle, defaultOptions, defaultPalette } from './defaults';
+import { candlestickDefaults, defaultAreaStyle, defaultLineStyle, defaultOptions, defaultPalette } from './defaults';
 import { getTheme } from '../themes';
 import type { ThemeConfig } from '../themes/types';
 import { sampleSeriesDataPoints } from '../data/sampleSeries';
@@ -107,12 +110,36 @@ export type ResolvedPieSeriesConfig = Readonly<
   }
 >;
 
+export type ResolvedCandlestickItemStyleConfig = Readonly<Required<CandlestickItemStyleConfig>>;
+
+export type ResolvedCandlestickSeriesConfig = Readonly<
+  Omit<CandlestickSeriesConfig, 'color' | 'style' | 'itemStyle' | 'barWidth' | 'barMinWidth' | 'barMaxWidth' | 'sampling' | 'samplingThreshold' | 'data'> & {
+    readonly color: string;
+    readonly style: CandlestickStyle;
+    readonly itemStyle: ResolvedCandlestickItemStyleConfig;
+    readonly barWidth: number | string;
+    readonly barMinWidth: number;
+    readonly barMaxWidth: number;
+    readonly sampling: 'none' | 'ohlc';
+    readonly samplingThreshold: number;
+    /** Original (unsampled) series data. */
+    readonly rawData: Readonly<CandlestickSeriesConfig['data']>;
+    readonly data: Readonly<CandlestickSeriesConfig['data']>;
+    /**
+     * Bounds computed from the original (unsampled) data. Used for axis auto-bounds so sampling
+     * cannot clip outliers.
+     */
+    readonly rawBounds?: RawBounds;
+  }
+>;
+
 export type ResolvedSeriesConfig =
   | ResolvedLineSeriesConfig
   | ResolvedAreaSeriesConfig
   | ResolvedBarSeriesConfig
   | ResolvedScatterSeriesConfig
-  | ResolvedPieSeriesConfig;
+  | ResolvedPieSeriesConfig
+  | ResolvedCandlestickSeriesConfig;
 
 export interface ResolvedChartGPUOptions
   extends Omit<ChartGPUOptions, 'grid' | 'xAxis' | 'yAxis' | 'theme' | 'palette' | 'series'> {
@@ -213,9 +240,15 @@ const normalizeOptionalColor = (color: unknown): string | undefined => {
 const normalizeSampling = (value: unknown): SeriesSampling | undefined => {
   if (typeof value !== 'string') return undefined;
   const v = value.trim().toLowerCase();
-  return v === 'none' || v === 'lttb' || v === 'average' || v === 'max' || v === 'min'
+  return v === 'none' || v === 'lttb' || v === 'average' || v === 'max' || v === 'min' || v === 'ohlc'
     ? (v as SeriesSampling)
     : undefined;
+};
+
+const normalizeCandlestickSampling = (value: unknown): 'none' | 'ohlc' | undefined => {
+  if (typeof value !== 'string') return undefined;
+  const v = value.trim().toLowerCase();
+  return v === 'none' || v === 'ohlc' ? (v as 'none' | 'ohlc') : undefined;
 };
 
 const normalizeSamplingThreshold = (value: unknown): number | undefined => {
@@ -262,6 +295,16 @@ const assertUnreachable = (value: never): never => {
       (value as unknown as { readonly type?: unknown } | null)?.type ?? 'unknown'
     }`
   );
+};
+
+let candlestickWarned = false;
+const warnCandlestickNotImplemented = (): void => {
+  if (!candlestickWarned) {
+    console.warn(
+      'ChartGPU: Candlestick series rendering is not yet implemented. Series will be skipped.'
+    );
+    candlestickWarned = true;
+  }
 };
 
 export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChartGPUOptions {
@@ -435,6 +478,46 @@ export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChart
         });
 
         return { ...rest, color, data: resolvedData };
+      }
+      case 'candlestick': {
+        warnCandlestickNotImplemented();
+
+        const resolvedSampling: 'none' | 'ohlc' =
+          normalizeCandlestickSampling((s as unknown as { sampling?: unknown }).sampling) ??
+          candlestickDefaults.sampling;
+        
+        const resolvedSamplingThreshold: number =
+          normalizeSamplingThreshold((s as unknown as { samplingThreshold?: unknown }).samplingThreshold) ??
+          candlestickDefaults.samplingThreshold;
+
+        const resolvedItemStyle: ResolvedCandlestickItemStyleConfig = {
+          upColor: normalizeOptionalColor(s.itemStyle?.upColor) ?? candlestickDefaults.itemStyle.upColor,
+          downColor: normalizeOptionalColor(s.itemStyle?.downColor) ?? candlestickDefaults.itemStyle.downColor,
+          upBorderColor: normalizeOptionalColor(s.itemStyle?.upBorderColor) ?? candlestickDefaults.itemStyle.upBorderColor,
+          downBorderColor: normalizeOptionalColor(s.itemStyle?.downBorderColor) ?? candlestickDefaults.itemStyle.downBorderColor,
+          borderWidth: typeof s.itemStyle?.borderWidth === 'number' && Number.isFinite(s.itemStyle.borderWidth)
+            ? s.itemStyle.borderWidth
+            : candlestickDefaults.itemStyle.borderWidth,
+        };
+
+        // TODO: Implement OHLC-specific bounds computation
+        // For now, return undefined rawBounds until proper implementation
+        const rawBounds = undefined;
+
+        return {
+          ...s,
+          rawData: s.data,
+          data: s.data, // TODO: Implement OHLC sampling when rendering is added
+          color,
+          style: s.style ?? candlestickDefaults.style,
+          itemStyle: resolvedItemStyle,
+          barWidth: s.barWidth ?? candlestickDefaults.barWidth,
+          barMinWidth: s.barMinWidth ?? candlestickDefaults.barMinWidth,
+          barMaxWidth: s.barMaxWidth ?? candlestickDefaults.barMaxWidth,
+          sampling: resolvedSampling,
+          samplingThreshold: resolvedSamplingThreshold,
+          rawBounds,
+        };
       }
       default: {
         return assertUnreachable(s);

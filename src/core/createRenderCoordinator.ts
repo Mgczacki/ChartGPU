@@ -201,8 +201,8 @@ const computeGlobalBounds = (
 
   for (let s = 0; s < series.length; s++) {
     const seriesConfig = series[s];
-    // Pie series are non-cartesian; they don't participate in x/y bounds.
-    if (seriesConfig.type === 'pie') continue;
+    // Pie and candlestick series are non-cartesian (or not yet implemented); they don't participate in x/y bounds.
+    if (seriesConfig.type === 'pie' || seriesConfig.type === 'candlestick') continue;
 
     const runtimeBoundsCandidate = runtimeRawBoundsByIndex?.[s] ?? null;
     if (runtimeBoundsCandidate) {
@@ -947,6 +947,7 @@ export function createRenderCoordinator(
 
   // Prevent spamming console.warn for repeated misuse.
   const warnedPieAppendSeries = new Set<number>();
+  const warnedCandlestickAppendSeries = new Set<number>();
 
   // Coordinator-owned runtime series store (cartesian only).
   // - `runtimeRawDataByIndex[i]` owns a mutable array for streaming appends.
@@ -1104,7 +1105,7 @@ export function createRenderCoordinator(
     for (const [seriesIndex, points] of pendingAppendByIndex) {
       if (points.length === 0) continue;
       const s = currentOptions.series[seriesIndex];
-      if (!s || s.type === 'pie') continue;
+      if (!s || s.type === 'pie' || s.type === 'candlestick') continue;
       didAppendAny = true;
 
       let raw = runtimeRawDataByIndex[seriesIndex];
@@ -1444,7 +1445,7 @@ export function createRenderCoordinator(
 
     for (let i = 0; i < count; i++) {
       const s = currentOptions.series[i]!;
-      if (s.type === 'pie') continue;
+      if (s.type === 'pie' || s.type === 'candlestick') continue;
 
       const raw = (s.rawData ?? s.data) as ReadonlyArray<DataPoint>;
       // Coordinator-owned: copy into a mutable array (streaming appends mutate this).
@@ -1458,7 +1459,7 @@ export function createRenderCoordinator(
     const next: ResolvedChartGPUOptions['series'][number][] = new Array(currentOptions.series.length);
     for (let i = 0; i < currentOptions.series.length; i++) {
       const s = currentOptions.series[i]!;
-      if (s.type === 'pie') {
+      if (s.type === 'pie' || s.type === 'candlestick') {
         next[i] = s;
         continue;
       }
@@ -1490,7 +1491,7 @@ export function createRenderCoordinator(
     for (let i = 0; i < runtimeBaseSeries.length; i++) {
       const s = runtimeBaseSeries[i]!;
 
-      if (s.type === 'pie') {
+      if (s.type === 'pie' || s.type === 'candlestick') {
         next[i] = s;
         continue;
       }
@@ -1796,6 +1797,16 @@ export function createRenderCoordinator(
       }
       return;
     }
+    if (s.type === 'candlestick') {
+      // Candlestick series are not yet implemented and currently not supported by streaming append.
+      if (!warnedCandlestickAppendSeries.has(seriesIndex)) {
+        warnedCandlestickAppendSeries.add(seriesIndex);
+        console.warn(
+          `RenderCoordinator.appendData(${seriesIndex}, ...): candlestick series are not yet implemented.`
+        );
+      }
+      return;
+    }
 
     const existing = pendingAppendByIndex.get(seriesIndex);
     if (existing) {
@@ -1821,6 +1832,8 @@ export function createRenderCoordinator(
         return false;
       case 'pie':
         return false;
+      case 'candlestick':
+        return false;
       default:
         return assertUnreachable(series);
     }
@@ -1838,7 +1851,7 @@ export function createRenderCoordinator(
       executeFlush({ requestRenderAfter: false });
     }
 
-    const hasCartesianSeries = currentOptions.series.some((s) => s.type !== 'pie');
+    const hasCartesianSeries = currentOptions.series.some((s) => s.type !== 'pie' && s.type !== 'candlestick');
     const seriesForIntro = renderSeries;
 
     // Story 5.16: start/update intro animation once we have drawable series marks.
@@ -1861,6 +1874,10 @@ export function createRenderCoordinator(
             case 'bar':
             case 'scatter': {
               if (s.data.length > 0) return true;
+              break;
+            }
+            case 'candlestick': {
+              // Candlestick not yet implemented, skip (no drawable marks).
               break;
             }
             default:
@@ -2312,6 +2329,10 @@ export function createRenderCoordinator(
             }
           }
           pieRenderers[i].prepare(s, gridArea);
+          break;
+        }
+        case 'candlestick': {
+          // Candlestick series are not yet implemented; skip rendering.
           break;
         }
         default:

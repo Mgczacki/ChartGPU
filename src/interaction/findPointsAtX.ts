@@ -163,8 +163,8 @@ export function findPointsAtX(
 
   for (let s = 0; s < series.length; s++) {
     const seriesConfig = series[s];
-    // Pie is non-cartesian; it can't match an x position.
-    if (seriesConfig.type === 'pie') continue;
+    // Pie and candlestick are non-cartesian (or not yet implemented); they can't match an x position.
+    if (seriesConfig.type === 'pie' || seriesConfig.type === 'candlestick') continue;
 
     const data = seriesConfig.data;
     const n = data.length;

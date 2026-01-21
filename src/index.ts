@@ -21,6 +21,9 @@ export type {
   BarItemStyleConfig,
   AxisConfig,
   AxisType,
+  CandlestickItemStyleConfig,
+  CandlestickSeriesConfig,
+  CandlestickStyle,
   ChartGPUOptions,
   DataZoomConfig,
   DataPoint,
@@ -29,6 +32,7 @@ export type {
   AreaSeriesConfig,
   LineSeriesConfig,
   BarSeriesConfig,
+  OHLCDataPoint,
   PieCenter,
   PieDataItem,
   PieItemStyleConfig,
@@ -44,9 +48,10 @@ export type {
 } from './config/types';
 
 // Options defaults + resolution
-export { defaultOptions } from './config/defaults';
+export { candlestickDefaults, defaultOptions } from './config/defaults';
 export { OptionResolver, resolveOptions } from './config/OptionResolver';
 export type {
+  ResolvedCandlestickSeriesConfig,
   ResolvedChartGPUOptions,
   ResolvedAreaSeriesConfig,
   ResolvedAreaStyleConfig,

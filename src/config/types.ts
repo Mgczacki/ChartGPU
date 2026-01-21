@@ -5,7 +5,7 @@
 import type { ThemeConfig } from '../themes/types';
 
 export type AxisType = 'value' | 'time' | 'category';
-export type SeriesType = 'line' | 'area' | 'bar' | 'scatter' | 'pie';
+export type SeriesType = 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'candlestick';
 
 /**
  * A single data point for a series.
@@ -14,7 +14,29 @@ export type DataPointTuple = readonly [x: number, y: number, size?: number];
 
 export type DataPoint = DataPointTuple | Readonly<{ x: number; y: number; size?: number }>;
 
-export type SeriesSampling = 'none' | 'lttb' | 'average' | 'max' | 'min';
+/**
+ * OHLC (Open-High-Low-Close) data point for candlestick charts.
+ * Order matches ECharts convention: [timestamp, open, close, low, high].
+ */
+export type OHLCDataPointTuple = readonly [
+  timestamp: number,
+  open: number,
+  close: number,
+  low: number,
+  high: number,
+];
+
+export type OHLCDataPointObject = Readonly<{
+  timestamp: number;
+  open: number;
+  close: number;
+  low: number;
+  high: number;
+}>;
+
+export type OHLCDataPoint = OHLCDataPointTuple | OHLCDataPointObject;
+
+export type SeriesSampling = 'none' | 'lttb' | 'average' | 'max' | 'min' | 'ohlc';
 
 /**
  * Scatter points use the tuple form `[x, y, size?]`.
@@ -168,12 +190,37 @@ export interface PieSeriesConfig extends Omit<SeriesConfigBase, 'data' | 'sampli
   readonly itemStyle?: PieItemStyleConfig;
 }
 
+export type CandlestickStyle = 'classic' | 'hollow';
+
+export interface CandlestickItemStyleConfig {
+  readonly upColor?: string;
+  readonly downColor?: string;
+  readonly upBorderColor?: string;
+  readonly downBorderColor?: string;
+  readonly borderWidth?: number;
+}
+
+export interface CandlestickSeriesConfig extends Omit<SeriesConfigBase, 'data'> {
+  readonly type: 'candlestick';
+  readonly data: ReadonlyArray<OHLCDataPoint>;
+  readonly style?: CandlestickStyle;
+  readonly itemStyle?: CandlestickItemStyleConfig;
+  readonly barWidth?: number | string;
+  readonly barMinWidth?: number;
+  readonly barMaxWidth?: number;
+  /**
+   * Sampling strategy for candlestick data. Only 'none' and 'ohlc' are supported.
+   */
+  readonly sampling?: 'none' | 'ohlc';
+}
+
 export type SeriesConfig =
   | LineSeriesConfig
   | AreaSeriesConfig
   | BarSeriesConfig
   | ScatterSeriesConfig
-  | PieSeriesConfig;
+  | PieSeriesConfig
+  | CandlestickSeriesConfig;
 
 /**
  * Parameters passed to tooltip formatter function.
