@@ -11,6 +11,10 @@ This is a guide for AI assistants working with ChartGPU. Use this document to qu
 - **Chart sync (multi-chart interaction)**: [chart.md](chart.md#chart-sync-interaction)
 - **Legend**: [chart.md](chart.md#legend-automatic)
 
+### Types and Interfaces
+- **PointerEventData**: Pre-computed pointer event data for worker thread communication - [src/config/types.ts](../../src/config/types.ts)
+- **TooltipData, LegendItem, AxisLabel**: DOM overlay data types - [src/config/types.ts](../../src/config/types.ts)
+
 ### Configuration
 - **Options overview**: [options.md](options.md#chartgpuoptions)
 - **Series configuration** (line, area, bar, scatter, pie, candlestick): [options.md](options.md#series-configuration)
@@ -38,6 +42,7 @@ This is a guide for AI assistants working with ChartGPU. Use this document to qu
 ### Interaction
 - **Event handling** (click, hover, crosshair): [interaction.md](interaction.md#event-handling)
 - **Zoom and pan APIs**: [interaction.md](interaction.md#zoom-and-pan-apis)
+- **Worker thread callbacks** (`onClickData`, `onHoverChange`, `onCrosshairMove`): [src/core/createRenderCoordinator.ts](../../src/core/createRenderCoordinator.ts)
 
 ### Animation
 - **Animation controller**: [animation.md](animation.md#animation-controller-internal)
@@ -95,8 +100,8 @@ This is a guide for AI assistants working with ChartGPU. Use this document to qu
 
 ### Enabling Worker Thread Support
 1. Configure `domOverlays: false` in [INTERNALS.md](INTERNALS.md#rendercoordinatorcallbacks)
-2. Implement worker thread callbacks in [INTERNALS.md](INTERNALS.md#worker-thread-support--dom-overlay-separation)
-3. Forward pointer events via [handlePointerEvent()](INTERNALS.md#rendercoordinatorhandlepointerevent)
+2. Implement worker thread callbacks (`onClickData`, `onTooltipUpdate`, etc.) in [INTERNALS.md](INTERNALS.md#worker-thread-support--dom-overlay-separation)
+3. Forward pointer events via [handlePointerEvent()](INTERNALS.md#rendercoordinatorhandlepointerevent) using `PointerEventData` - [src/config/types.ts](../../src/config/types.ts)
 
 ## Architecture Overview
 

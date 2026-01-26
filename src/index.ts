@@ -35,6 +35,7 @@ export type {
   LineSeriesConfig,
   BarSeriesConfig,
   NormalizedPointerEvent,
+  PointerEventData,
   OHLCDataPoint,
   PieCenter,
   PieDataItem,

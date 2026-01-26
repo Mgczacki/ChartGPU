@@ -5,7 +5,7 @@ import type {
   ResolvedChartGPUOptions,
   ResolvedPieSeriesConfig,
 } from '../config/OptionResolver';
-import type { AnimationConfig, AxisLabel, DataPoint, DataPointTuple, LegendItem, NormalizedPointerEvent, OHLCDataPoint, OHLCDataPointTuple, PieCenter, PieRadius, TooltipData } from '../config/types';
+import type { AnimationConfig, AxisLabel, DataPoint, DataPointTuple, LegendItem, PointerEventData, OHLCDataPoint, OHLCDataPointTuple, PieCenter, PieRadius, TooltipData } from '../config/types';
 import type { SupportedCanvas } from './GPUContext';
 import { isHTMLCanvasElement as isHTMLCanvasElementGPU } from './GPUContext';
 import { createDataStore } from '../data/createDataStore';
@@ -30,9 +30,12 @@ import { createInsideZoom } from '../interaction/createInsideZoom';
 import { createZoomState } from '../interaction/createZoomState';
 import type { ZoomRange, ZoomState } from '../interaction/createZoomState';
 import { findNearestPoint } from '../interaction/findNearestPoint';
+import type { NearestPointMatch } from '../interaction/findNearestPoint';
 import { findPointsAtX } from '../interaction/findPointsAtX';
 import { computeCandlestickBodyWidthRange, findCandlestick } from '../interaction/findCandlestick';
+import type { CandlestickMatch } from '../interaction/findCandlestick';
 import { findPieSlice } from '../interaction/findPieSlice';
+import type { PieSliceMatch } from '../interaction/findPieSlice';
 import { createLinearScale } from '../utils/scales';
 import type { LinearScale } from '../utils/scales';
 import { parseCssColorToGPUColor, parseCssColorToRgba01 } from '../utils/colors';
@@ -118,10 +121,10 @@ export interface RenderCoordinator {
    */
   onZoomRangeChange(cb: (range: Readonly<{ start: number; end: number }>) => void): () => void;
   /**
-   * Accepts a normalized pointer event for worker thread event forwarding.
+   * Accepts a pointer event with pre-computed grid coordinates for worker thread event forwarding.
    * Only available when domOverlays is false.
    */
-  handlePointerEvent(event: NormalizedPointerEvent): void;
+  handlePointerEvent(event: PointerEventData): void;
   render(): void;
   dispose(): void;
 }
@@ -160,6 +163,21 @@ export type RenderCoordinatorCallbacks = Readonly<{
    * Receives canvas-local CSS pixel x coordinate, or null when crosshair is hidden.
    */
   readonly onCrosshairMove?: (x: number | null) => void;
+  /**
+   * Called when user taps/clicks (only when domOverlays is false).
+   * Includes hit test result with seriesIndex, dataIndex, and value.
+   * Main thread is responsible for tap detection; worker thread performs hit testing.
+   */
+  readonly onClickData?: (payload: {
+    readonly x: number;
+    readonly y: number;
+    readonly gridX: number;
+    readonly gridY: number;
+    readonly isInGrid: boolean;
+    readonly nearest: NearestPointMatch | null;
+    readonly pieSlice: PieSliceMatch | null;
+    readonly candlestick: CandlestickMatch | null;
+  }) => void;
   /**
    * Called when GPU device is lost.
    */
@@ -3577,28 +3595,21 @@ export function createRenderCoordinator(
     if (!canvas) return;
 
     // Validate event coordinates (guard against NaN/Infinity from worker thread serialization issues)
-    if (!Number.isFinite(event.x) || !Number.isFinite(event.y)) {
+    if (
+      !Number.isFinite(event.x) ||
+      !Number.isFinite(event.y) ||
+      !Number.isFinite(event.gridX) ||
+      !Number.isFinite(event.gridY) ||
+      !Number.isFinite(event.plotWidthCss) ||
+      !Number.isFinite(event.plotHeightCss)
+    ) {
       return;
     }
 
-    const gridArea = computeGridArea(gpuContext, currentOptions);
-    const cssWidth = getCanvasCssWidth(canvas, gpuContext.devicePixelRatio ?? 1);
-    const cssHeight = canvas.height / (gpuContext.devicePixelRatio ?? 1);
+    // Use pre-computed grid coordinates from event
+    const { type, x, y, gridX, gridY, plotWidthCss, plotHeightCss, isInGrid } = event;
 
-    // Convert canvas-local coordinates to grid-local coordinates
-    const gridX = event.x - gridArea.left;
-    const gridY = event.y - gridArea.top;
-
-    const plotWidthCss = cssWidth - gridArea.left - gridArea.right;
-    const plotHeightCss = cssHeight - gridArea.top - gridArea.bottom;
-
-    const isInGrid = 
-      gridX >= 0 &&
-      gridX <= plotWidthCss &&
-      gridY >= 0 &&
-      gridY <= plotHeightCss;
-
-    if (event.type === 'pointerleave') {
+    if (type === 'leave') {
       pointerState = { ...pointerState, isInGrid: false, hasPointer: false };
       crosshairRenderer.setVisible(false);
       lastTooltipContent = null;
@@ -3614,18 +3625,82 @@ export function createRenderCoordinator(
       return;
     }
 
-    // Update pointer state
-    pointerState = {
-      source: 'mouse',
-      x: event.x,
-      y: event.y,
-      gridX,
-      gridY,
-      isInGrid,
-      hasPointer: true,
-    };
+    if (type === 'move') {
+      // Update pointer state for hover/crosshair
+      pointerState = {
+        source: 'mouse',
+        x,
+        y,
+        gridX,
+        gridY,
+        isInGrid,
+        hasPointer: true,
+      };
 
-    requestRender();
+      requestRender();
+      return;
+    }
+
+    if (type === 'click') {
+      // Perform hit testing for click events
+      if (!callbacks?.onClickData) return;
+
+      let nearest: NearestPointMatch | null = null;
+      let pieSlice: PieSliceMatch | null = null;
+      let candlestick: CandlestickMatch | null = null;
+
+      // Use cached interaction scales and render series from last render
+      if (isInGrid && lastInteractionScales) {
+        // Pie slice hit testing
+        pieSlice = findPieSliceAtPointer(
+          renderSeries,
+          gridX,
+          gridY,
+          plotWidthCss,
+          plotHeightCss
+        );
+
+        // Candlestick hit testing
+        if (!pieSlice) {
+          const candlestickResult = findCandlestickAtPointer(
+            renderSeries,
+            gridX,
+            gridY,
+            lastInteractionScales
+          );
+          if (candlestickResult) {
+            candlestick = {
+              seriesIndex: candlestickResult.seriesIndex,
+              dataIndex: candlestickResult.params.dataIndex,
+              point: candlestickResult.match.point,
+            };
+          }
+        }
+
+        // Nearest point hit testing
+        if (!pieSlice && !candlestick) {
+          nearest = findNearestPoint(
+            renderSeries,
+            gridX,
+            gridY,
+            lastInteractionScales.xScale,
+            lastInteractionScales.yScale,
+            20 // maxDistance in CSS pixels
+          );
+        }
+      }
+
+      callbacks.onClickData({
+        x,
+        y,
+        gridX,
+        gridY,
+        isInGrid,
+        nearest,
+        pieSlice,
+        candlestick,
+      });
+    }
   };
 
   const dispose: RenderCoordinator['dispose'] = () => {

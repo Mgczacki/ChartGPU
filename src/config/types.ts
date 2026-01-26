@@ -304,7 +304,33 @@ export interface AxisLabel {
 }
 
 /**
+ * High-level pointer event data for worker thread event forwarding.
+ * Pre-computed grid coordinates eliminate redundant computation in worker.
+ */
+export interface PointerEventData {
+  readonly type: 'move' | 'click' | 'leave';
+  /** Canvas-local CSS pixels. */
+  readonly x: number;
+  /** Canvas-local CSS pixels. */
+  readonly y: number;
+  /** Plot-area-local CSS pixels. */
+  readonly gridX: number;
+  /** Plot-area-local CSS pixels. */
+  readonly gridY: number;
+  /** Plot area width in CSS pixels. */
+  readonly plotWidthCss: number;
+  /** Plot area height in CSS pixels. */
+  readonly plotHeightCss: number;
+  /** Whether pointer is inside plot area. */
+  readonly isInGrid: boolean;
+  /** Event timestamp in milliseconds for gesture detection. */
+  readonly timestamp: number;
+}
+
+/**
  * Normalized pointer event for worker thread event forwarding.
+ * @deprecated Use PointerEventData for worker thread communication.
+ * This type is retained for backward compatibility.
  */
 export interface NormalizedPointerEvent {
   readonly type: 'pointerdown' | 'pointermove' | 'pointerup' | 'pointerleave';
