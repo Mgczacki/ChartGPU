@@ -139,8 +139,9 @@ User: "Document the new zoom API methods"
 - **Internal docs**: `docs/` directory
   - `docs/api/` - Split API documentation (navigation hub, chart, options, themes, etc.)
   - `docs/GETTING_STARTED.md` - Getting started guide
-  - `docs/GPU_TIMING_IMPLEMENTATION.md` - Technical implementation docs
-  - `docs/INCREMENTAL_APPEND_OPTIMIZATION.md` - Technical implementation docs
+  - `docs/internal/` - Contributor/implementation documentation
+    - `docs/internal/GPU_TIMING_IMPLEMENTATION.md` - GPU timing methodology
+    - `docs/internal/INCREMENTAL_APPEND_OPTIMIZATION.md` - GPU buffer append optimization
   
 - **Public API**: Documented in `docs/api/` (maintained by api-documenter)
 - **Examples**: `examples/` directory (referenced from docs, not documented directly)

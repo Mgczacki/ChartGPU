@@ -1,152 +1,391 @@
 # Getting Started with ChartGPU
 
-This guide will help you get started with ChartGPU, a GPU-accelerated charting library built with WebGPU.
+Welcome to ChartGPU! This guide will help you create your first GPU-accelerated chart in minutes.
 
 ## Prerequisites
 
-Before you begin, ensure you have:
+Before you begin, ensure your browser supports WebGPU:
 
-1. **A WebGPU-compatible browser:**
-   - Chrome 113+ or Edge 113+ (WebGPU enabled by default)
-   - Safari 18+ (WebGPU enabled by default)
-   - Firefox (WebGPU support in development)
+- **Chrome 113+** or **Edge 113+** (WebGPU enabled by default)
+- **Safari 18+** (WebGPU enabled by default)
+- **Firefox**: not yet supported (WebGPU support in development)
 
-2. **Node.js 18+** installed on your system
+You can check WebGPU availability in JavaScript:
 
-3. **Basic knowledge** of TypeScript/JavaScript and WebGPU concepts
+```js
+if ('gpu' in navigator) {
+  console.log('WebGPU is supported!');
+} else {
+  console.log('WebGPU is not available in this browser.');
+}
+```
+
+**Note:** ChartGPU will throw an error if WebGPU is unavailable when you try to create a chart. We'll handle this gracefully in the examples below.
 
 ## Installation
 
-Install ChartGPU using npm or yarn:
+### Option 1: npm (Recommended)
 
-- Install with `npm install chartgpu`
-- Install with `yarn add chartgpu`
+For modern JavaScript projects using a bundler:
 
-## Your First GPU Context
+```bash
+npm install chartgpu
+```
 
-The first step in using ChartGPU is initializing a GPU context. This gives you access to the WebGPU device for rendering operations.
+### Option 2: CDN (Quick prototyping)
 
-Import `GPUContext` and call `GPUContext.create()` to create and initialize a context. Access the device through the `device` property, and always call `destroy()` when finished.
+For quick prototypes or demos, you can import ChartGPU directly from a CDN using ES modules:
 
-See [GPUContext.ts](../src/core/GPUContext.ts) for the implementation.
+- **unpkg**: `https://unpkg.com/chartgpu@0.1.0/dist/index.js`
+- **jsDelivr**: `https://cdn.jsdelivr.net/npm/chartgpu@0.1.0/dist/index.js`
 
-### Error Handling
+**Important:** Always pin to a specific version (e.g., `@0.1.0`) to avoid breaking changes. The CDN build works but is not a separately maintained distribution channel.
 
-Wrap initialization in try-catch to handle errors gracefully. The error messages indicate the specific failure reason and provide guidance on resolution.
+## Your First Chart in 5 Steps
 
-## Checking Browser Support
+Let's create a simple line chart. We'll show two complete paths: one using npm + Vite, and one using a single HTML file with CDN.
 
-Before attempting to initialize, check if WebGPU is available by verifying `'gpu' in navigator`. The `initialize()` method performs this check automatically and throws a descriptive error if WebGPU is unavailable.
+### Path 1: npm + Vite
 
-## Common Patterns
+#### Step 1: Create a new project
 
-### Singleton GPU Context
+```bash
+npm create vite@latest my-chartgpu-app -- --template vanilla-ts
+cd my-chartgpu-app
+npm install
+npm install chartgpu
+```
 
-For applications that need a single GPU context throughout their lifetime, implement a singleton pattern that creates one context and reuses it.
+#### Step 2: Create your HTML (`index.html`)
 
-### Context Reuse
+```html
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ChartGPU - First Chart</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 20px;
+        font-family: system-ui, -apple-system, sans-serif;
+        background: #1a1a1a;
+        color: #fff;
+      }
+      #chart {
+        width: 800px;
+        height: 400px;
+        max-width: 100%;
+        background: #2a2a2a;
+        border-radius: 8px;
+      }
+      #error {
+        display: none;
+        padding: 16px;
+        background: #ff4444;
+        color: white;
+        border-radius: 8px;
+        margin-bottom: 16px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="error"></div>
+    <div id="chart"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
+```
 
-You can reuse a context after destroying it by calling `initialize()` again. The context must be destroyed before reinitializing.
+#### Step 3: Create your chart script (`src/main.ts`)
 
-### Multiple Contexts
+```ts
+import { ChartGPU } from 'chartgpu';
 
-You can create multiple GPU contexts if needed. Each context manages its own adapter and device.
+const showError = (message: string) => {
+  const el = document.getElementById('error');
+  if (el) {
+    el.textContent = message;
+    el.style.display = 'block';
+  }
+};
+
+async function main() {
+  // Check WebGPU support
+  if (!('gpu' in navigator)) {
+    showError('WebGPU is not supported in this browser. Please use Chrome 113+, Edge 113+, or Safari 18+.');
+    return;
+  }
+
+  const container = document.getElementById('chart');
+  if (!container) {
+    throw new Error('Chart container not found');
+  }
+
+  try {
+    // Create the chart (async!)
+    const chart = await ChartGPU.create(container, {
+      series: [
+        {
+          type: 'line',
+          name: 'My Data',
+          data: [
+            [0, 1],
+            [1, 3],
+            [2, 2],
+            [3, 5],
+            [4, 4],
+          ],
+        },
+      ],
+    });
+
+    // Handle window resize
+    window.addEventListener('resize', () => {
+      chart.resize();
+    });
+
+    // Cleanup on page unload
+    window.addEventListener('beforeunload', () => {
+      chart.dispose();
+    });
+  } catch (err) {
+    console.error(err);
+    showError(err instanceof Error ? err.message : 'Failed to create chart');
+  }
+}
+
+main();
+```
+
+#### Step 4: Run the development server
+
+```bash
+npm run dev
+```
+
+#### Step 5: Open your browser
+
+Navigate to the URL shown in the terminal (usually `http://localhost:5173/`). You should see your chart!
+
+---
+
+### Path 2: Single HTML file with CDN
+
+For quick prototyping, you can use a single HTML file:
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ChartGPU - CDN Example</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 20px;
+        font-family: system-ui, -apple-system, sans-serif;
+        background: #1a1a1a;
+        color: #fff;
+      }
+      #chart {
+        width: 800px;
+        height: 400px;
+        max-width: 100%;
+        background: #2a2a2a;
+        border-radius: 8px;
+      }
+      #error {
+        display: none;
+        padding: 16px;
+        background: #ff4444;
+        color: white;
+        border-radius: 8px;
+        margin-bottom: 16px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="error"></div>
+    <div id="chart"></div>
+
+    <script type="module">
+      import { ChartGPU } from 'https://unpkg.com/chartgpu@0.1.0/dist/index.js';
+
+      const showError = (message) => {
+        const el = document.getElementById('error');
+        if (el) {
+          el.textContent = message;
+          el.style.display = 'block';
+        }
+      };
+
+      async function main() {
+        // Check WebGPU support
+        if (!('gpu' in navigator)) {
+          showError('WebGPU is not supported in this browser. Please use Chrome 113+, Edge 113+, or Safari 18+.');
+          return;
+        }
+
+        const container = document.getElementById('chart');
+        if (!container) {
+          throw new Error('Chart container not found');
+        }
+
+        try {
+          // Create the chart (async!)
+          const chart = await ChartGPU.create(container, {
+            series: [
+              {
+                type: 'line',
+                name: 'My Data',
+                data: [
+                  [0, 1],
+                  [1, 3],
+                  [2, 2],
+                  [3, 5],
+                  [4, 4],
+                ],
+              },
+            ],
+          });
+
+          // Handle window resize
+          window.addEventListener('resize', () => {
+            chart.resize();
+          });
+
+          // Cleanup on page unload
+          window.addEventListener('beforeunload', () => {
+            chart.dispose();
+          });
+        } catch (err) {
+          console.error(err);
+          showError(err instanceof Error ? err.message : 'Failed to create chart');
+        }
+      }
+
+      main();
+    </script>
+  </body>
+</html>
+```
+
+Save this as `index.html` and open it with a local development server (see "Common Gotchas" below for why you need a dev server).
+
+---
+
+## Common Gotchas
+
+### 1. Container must have explicit size
+
+ChartGPU needs to know how big to make the canvas. If your container has no width/height, the chart may not render correctly.
+
+**Solution:** Set explicit CSS dimensions on your chart container:
+
+```css
+#chart {
+  width: 800px;
+  height: 400px;
+}
+```
+
+### 2. Chart creation is async
+
+`ChartGPU.create()` returns a Promise, so you must `await` it or use `.then()`:
+
+```ts
+// ✅ Correct
+const chart = await ChartGPU.create(container, options);
+
+// ❌ Wrong
+const chart = ChartGPU.create(container, options);
+```
+
+### 3. Run code after DOM is ready
+
+Make sure your chart container exists in the DOM before calling `ChartGPU.create()`. If using `<script>` tags, place them at the end of `<body>` or use `DOMContentLoaded`:
+
+```ts
+document.addEventListener('DOMContentLoaded', () => {
+  main();
+});
+```
+
+### 4. Use a dev server (avoid `file://`)
+
+When using the CDN approach, open your HTML file through a local development server, not by double-clicking the file. Modern ES modules don't work with `file://` URLs.
+
+**Quick dev server options:**
+
+```bash
+# Python 3
+python -m http.server 8000
+
+# Node.js (npx)
+npx serve
+
+# VS Code Live Server extension
+```
+
+Then visit `http://localhost:8000` in your browser.
+
+---
 
 ## Next Steps
 
-Now that you have a GPU context initialized, you can:
+Congratulations! You've created your first ChartGPU chart. Here's what to explore next:
 
-1. **Create GPU resources** - Use the device to create buffers, textures, and pipelines
-2. **Set up rendering** - Configure render pipelines for drawing charts
-3. **Handle data** - Upload chart data to GPU buffers (internal helper: [`createDataStore.ts`](../src/data/createDataStore.ts))
-4. **Render** - Execute render passes to draw your charts
-5. **Themes (optional)** - Theme presets (`darkTheme`, `lightTheme`, `getTheme(name: ThemeName)`) and the `ThemeConfig` type are available from the public API. See [`src/themes/index.ts`](../src/themes/index.ts), [`types.ts`](../src/themes/types.ts), and [`api/themes.md`](./api/themes.md#themeconfig).
-   - Theme colors are applied during rendering (background clear, grid lines, and axes); see [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts).
-   - Theme typography/text color is also used for numeric axis tick value labels rendered above the canvas; see [`api/INTERNALS.md`](./api/INTERNALS.md#text-overlay-internal--contributor-notes).
+### Learn more about the API
 
-## Troubleshooting
+- **[API Reference](./api/README.md)** - Complete API documentation with all chart options
+- **[API Reference (auto-generated)](./api-reference.md)** - Comprehensive type definitions and method signatures
 
-### "WebGPU is not available" Error
+### Explore examples
 
-**Problem:** The browser doesn't support WebGPU or it's disabled.
+The [`examples/`](../examples/) folder contains working demos of all ChartGPU features:
 
-**Solutions:**
-- Use Chrome 113+, Edge 113+, or Safari 18+
-- Enable WebGPU in browser flags (if using an older version)
-- Check browser console for additional error messages
+- **[`basic-line/`](../examples/basic-line/)** - Multi-series line charts with filled areas, axis titles, and event handling
+- **[`interactive/`](../examples/interactive/)** - Synchronized charts with custom tooltips and click events
+- **[`candlestick-streaming/`](../examples/candlestick-streaming/)** - Live candlestick streaming with 5 million candles at 100+ FPS
+- **[`live-streaming/`](../examples/live-streaming/)** - Real-time data streaming with `appendData()`
+- **[`sampling/`](../examples/sampling/)** - Large datasets with automatic downsampling and zoom
+- **[`scatter/`](../examples/scatter/)** - Scatter plots with thousands of points
+- **[`grouped-bar/`](../examples/grouped-bar/)** - Bar charts with clustering and stacking
+- **[`pie/`](../examples/pie/)** - Pie and donut charts
 
-### "Failed to request WebGPU adapter" Error
+To run the examples locally:
 
-**Problem:** No compatible GPU adapter found.
+```bash
+git clone https://github.com/hunterg325/ChartGPU.git
+cd ChartGPU
+npm install
+npm run dev
+```
 
-**Solutions:**
-- Ensure you have a GPU available (not running in headless mode)
-- Check if WebGPU is enabled in browser settings
-- Try updating your graphics drivers
+Then open `http://localhost:5176/examples/` in your browser.
 
-### Device Initialization Fails
+### Advanced topics
 
-**Problem:** Device request fails after adapter is found.
+- **Themes**: Use built-in themes (`theme: 'dark' | 'light'`) or create custom themes
+- **Streaming data**: Use `chart.appendData(seriesIndex, newPoints)` for real-time updates
+- **Zoom & pan**: Enable interactive zoom with `dataZoom: [{ type: 'inside' }]`
+- **Multiple series types**: Mix line, area, bar, scatter, and pie in one chart
+- **Animation**: Customize transitions with `animation: { duration, easing, delay }`
 
-**Solutions:**
-- Check browser console for detailed error messages
-- Ensure sufficient GPU resources are available
-- Try closing other GPU-intensive applications
-
-## Examples
-
-See the [examples directory](../examples/) for complete working examples.
-
-Chart series types include `'line' | 'area' | 'bar' | 'scatter' | 'pie'`; see [`types.ts`](../src/config/types.ts). Note: pie series are non-cartesian and do not participate in cartesian x/y bounds derivation or cartesian hit-testing; see [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts), [`findNearestPoint.ts`](../src/interaction/findNearestPoint.ts), and [`findPointsAtX.ts`](../src/interaction/findPointsAtX.ts).
-
-ChartGPU also supports syncing interaction across multiple charts (crosshair x-position + tooltip x-value). See the public `connectCharts(...)` helper in [`createChartSync.ts`](../src/interaction/createChartSync.ts) and the API notes in [`api/chart.md`](./api/chart.md#chart-sync-interaction).
-
-Chart instances also mount an internal legend panel by default (series swatches + names) alongside the canvas. Series labels come from `series[i].name` (trimmed), falling back to `Series N`; see [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts) and the internal [`createLegend.ts`](../src/components/createLegend.ts).
-
-Chart instances can also show an internal HTML tooltip overlay on hover when `ChartGPUOptions.tooltip.show !== false`; see the tooltip option types in [`types.ts`](../src/config/types.ts) and tooltip behavior notes in [`api/options.md`](./api/options.md#tooltip-configuration).
-
-Chart instances also render a built-in hover highlight ring when the pointer is inside the plot grid and a nearest data point can be determined; this is part of the internal render pipeline in [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts) (see hover highlight notes in [`api/INTERNALS.md`](./api/INTERNALS.md#highlight-renderer-internal--contributor-notes)).
-
-Chart instances enable animation by default (`ChartGPUOptions.animation` defaults to enabled when omitted). Series marks animate on first render; set `animation: false` to disable. See [`api/options.md`](./api/options.md#animation-configuration) for animation configuration details.
-
-Chart instances expose event listeners via `on()` and `off()` methods for handling clicks, hover interactions, and crosshair syncing (`'click'`, `'mouseover'`, `'mouseout'`, `'crosshairMove'`). See [`api/interaction.md`](./api/interaction.md#event-handling) for event handling documentation (note that `'crosshairMove'` uses a minimal payload `{ x, source? }` and is emitted for both pointer-driven and programmatic interaction-x updates).
-
-The `hello-world` example demonstrates continuous rendering by animating the clear color through the full color spectrum, proving that the render loop is working correctly. It also includes an example-only WGSL compilation smoke-check via `GPUShaderModule.getCompilationInfo()` for several shaders; see [hello-world/main.ts](../examples/hello-world/main.ts) for implementation.
-
-The `basic-line` example demonstrates line series configuration (including a filled line series via `areaStyle`) and axis titles via `AxisConfig.name` (`xAxis.name` / `yAxis.name`). See [basic-line/main.ts](../examples/basic-line/main.ts).
-
-The `scatter` example demonstrates instanced scatter rendering with thousands of points, including fixed `symbolSize`, per-point `[x, y, size]`, and a functional `symbolSize`. See [scatter/main.ts](../examples/scatter/main.ts).
-
-The `grouped-bar` example demonstrates clustered + stacked bar rendering (via `series[i].stack`, including negative values) and bar layout options (`barWidth`, `barGap`, `barCategoryGap`). See [grouped-bar/main.ts](../examples/grouped-bar/main.ts).
-
-The `data-update-animation` example is the visual verification for data update transition animations: subsequent `setOption(...)` calls that change series data (cartesian and pie) animate when `ChartGPUOptions.animation` is enabled. See [data-update-animation/main.ts](../examples/data-update-animation/main.ts).
-
-The `sampling` example demonstrates cartesian series sampling with x-axis data zoom: as the percent-space zoom window \([0, 100]\) changes, ChartGPU resamples the **visible x-range** from raw (unsampled) data (debounced ~100ms). Axis auto-bounds remain derived from raw (unsampled) series data unless you set explicit axis `min`/`max`. See [sampling/main.ts](../examples/sampling/main.ts), [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts), and [`createZoomState.ts`](../src/interaction/createZoomState.ts).
-
-The `pie` example demonstrates pie/donut rendering and per-slice `PieDataItem.color?: string`. See [pie/main.ts](../examples/pie/main.ts) and the option types in [`types.ts`](../src/config/types.ts).
-
-The `interactive` example demonstrates two vertically stacked charts with synced interaction (via `connectCharts(...)`), axis-trigger tooltip mode (`ChartGPUOptions.tooltip.trigger = 'axis'`) with a custom formatter, and click logging. See [interactive/main.ts](../examples/interactive/main.ts) and [createChartSync.ts](../src/interaction/createChartSync.ts).
-
-To run examples:
-
-1. Start the development server: `npm run dev`
-2. Navigate to `http://localhost:5176/examples/index.html`
-
-## Acceptance checks
-
-- Run `npm run acceptance:zoom-state` to execute the zoom window state manager acceptance checks in [`examples/acceptance/zoom-state.ts`](../examples/acceptance/zoom-state.ts) (validates percent-range clamping/order, zoom/pan behavior, and change notification semantics for [`createZoomState.ts`](../src/interaction/createZoomState.ts)).
-- Run `npm run acceptance:lttb-sample` to execute CPU LTTB downsampling acceptance checks in [`examples/acceptance/lttb-sample.ts`](../examples/acceptance/lttb-sample.ts) (validates that 100K → 1K sampling preserves peaks/valleys on a synthetic dataset; exercises the internal [`lttbSample`](../src/data/lttbSample.ts) helper).
-- Run `npm run acceptance:easing` to execute easing function acceptance checks in [`examples/acceptance/easing.ts`](../examples/acceptance/easing.ts) (validates endpoints, clamping, and output range for easing functions implemented in [`easing.ts`](../src/utils/easing.ts)).
-
-## API Reference
-
-For detailed API documentation, see [api/README.md](./api/README.md).
+---
 
 ## Support
 
-If you encounter issues:
+If you run into issues:
 
-1. Check the [troubleshooting section](#troubleshooting) above
-2. Review the [API documentation](./api/README.md)
-3. Check browser console for error messages
-4. Ensure you're using a supported browser version
+1. **Check browser support**: Ensure you're using Chrome 113+, Edge 113+, or Safari 18+
+2. **Check the console**: Look for error messages in your browser's developer console (F12)
+3. **Review the examples**: The [`examples/`](../examples/) folder has working code for reference
+4. **Read the docs**: See [`docs/api/README.md`](./api/README.md) for detailed API documentation
+
+---
+
+Happy charting! 🚀

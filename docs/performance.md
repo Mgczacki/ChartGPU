@@ -208,7 +208,7 @@ See [`ChartGPU.ts`](../src/ChartGPU.ts) for lifecycle and [`createRenderCoordina
 - No buffer reallocation needed
 - 8-byte aligned offsets (2 floats × 4 bytes = 8 bytes per point)
 
-See [`docs/INCREMENTAL_APPEND_OPTIMIZATION.md`](./INCREMENTAL_APPEND_OPTIMIZATION.md) for detailed analysis.
+See [`docs/internal/INCREMENTAL_APPEND_OPTIMIZATION.md`](./internal/INCREMENTAL_APPEND_OPTIMIZATION.md) for detailed analysis.
 
 ## Memory Management and Disposal
 
@@ -320,7 +320,7 @@ See [`examples/million-points/main.ts`](../examples/million-points/main.ts) for 
 - **If GPU time < CPU time:** CPU is the bottleneck
 - Includes queue latency + GPU execution + CPU sync overhead
 
-See [`docs/GPU_TIMING_IMPLEMENTATION.md`](./GPU_TIMING_IMPLEMENTATION.md) for timing methodology.
+See [`docs/internal/GPU_TIMING_IMPLEMENTATION.md`](./internal/GPU_TIMING_IMPLEMENTATION.md) for timing methodology.
 
 **Rendered Point Count:**
 - Estimated points after sampling
@@ -394,8 +394,8 @@ Run the benchmark on your target hardware to establish baseline performance for 
 
 - [`docs/api/README.md`](./api/README.md) — Full API reference including sampling, zoom, and lifecycle APIs
 - [`docs/GETTING_STARTED.md`](./GETTING_STARTED.md) — Quick start guide and basic usage
-- [`docs/INCREMENTAL_APPEND_OPTIMIZATION.md`](./INCREMENTAL_APPEND_OPTIMIZATION.md) — Deep dive into GPU buffer append optimization
-- [`docs/GPU_TIMING_IMPLEMENTATION.md`](./GPU_TIMING_IMPLEMENTATION.md) — GPU timing methodology and interpretation
+- [`docs/internal/INCREMENTAL_APPEND_OPTIMIZATION.md`](./internal/INCREMENTAL_APPEND_OPTIMIZATION.md) — Deep dive into GPU buffer append optimization (contributor documentation)
+- [`docs/internal/GPU_TIMING_IMPLEMENTATION.md`](./internal/GPU_TIMING_IMPLEMENTATION.md) — GPU timing methodology and interpretation (contributor documentation)
 - [`examples/sampling/`](../examples/sampling/) — Sampling strategies demonstration
 - [`examples/live-streaming/`](../examples/live-streaming/) — Real-time streaming best practices
 - [`examples/million-points/`](../examples/million-points/) — Performance benchmark with GPU timing
