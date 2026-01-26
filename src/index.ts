@@ -74,7 +74,11 @@ export type { LinearScale, CategoryScale } from './utils/scales';
 export { connectCharts } from './interaction/createChartSync';
 
 // Core exports - Functional API (preferred)
-export type { GPUContextState } from './core/GPUContext';
+export type {
+  GPUContextState,
+  GPUContextOptions,
+  SupportedCanvas,
+} from './core/GPUContext';
 export {
   createGPUContext,
   createGPUContextAsync,

@@ -6,17 +6,57 @@ The functional API provides a type-safe, immutable approach to managing WebGPU c
 
 See [GPUContext.ts](../../src/core/GPUContext.ts) for the complete implementation.
 
+## Types
+
+### `SupportedCanvas`
+
+Union type for supported canvas elements: `HTMLCanvasElement | OffscreenCanvas`
+
+Both `HTMLCanvasElement` (main thread) and `OffscreenCanvas` (Web Workers) are supported for rendering.
+
+See [GPUContext.ts](../../src/core/GPUContext.ts) for type definition.
+
+### `GPUContextOptions`
+
+Configuration options for GPU context initialization:
+
+- `devicePixelRatio?: number` - Device pixel ratio for high-DPI displays. Auto-detects on main thread (`window.devicePixelRatio`), defaults to `1.0` in Web Workers.
+- `alphaMode?: 'opaque' | 'premultiplied'` - Canvas alpha transparency mode. Default: `'opaque'` (faster, no transparency).
+- `powerPreference?: 'low-power' | 'high-performance'` - GPU power preference for adapter selection. Default: `'high-performance'`.
+
+See [GPUContext.ts](../../src/core/GPUContext.ts) for implementation details.
+
+## Functions
+
 ### `GPUContextState`
 
-Represents the state of a GPU context with readonly properties.
+Represents the state of a GPU context with readonly properties:
 
-### `createGPUContext(canvas?: HTMLCanvasElement): GPUContextState`
+- `adapter: GPUAdapter | null` - WebGPU adapter instance
+- `device: GPUDevice | null` - WebGPU device instance
+- `initialized: boolean` - Whether context is initialized
+- `canvas: SupportedCanvas | null` - Canvas element (HTMLCanvasElement or OffscreenCanvas)
+- `canvasContext: GPUCanvasContext | null` - WebGPU canvas context
+- `preferredFormat: GPUTextureFormat | null` - Preferred canvas texture format
+- `devicePixelRatio: number` - DPR used for canvas sizing
+- `alphaMode: 'opaque' | 'premultiplied'` - Canvas alpha mode
+- `powerPreference: 'low-power' | 'high-performance'` - GPU power preference
+
+### `createGPUContext(canvas?: SupportedCanvas, options?: GPUContextOptions): GPUContextState`
 
 Creates a new GPUContext state with initial values.
 
-### `createGPUContextAsync(canvas?: HTMLCanvasElement): Promise<GPUContextState>`
+**Parameters:**
+- `canvas` - Optional HTMLCanvasElement or OffscreenCanvas
+- `options` - Optional configuration for DPR, alpha mode, and power preference
+
+### `createGPUContextAsync(canvas?: SupportedCanvas, options?: GPUContextOptions): Promise<GPUContextState>`
 
 Creates and initializes a GPU context in one step. Recommended for most use cases.
+
+**Parameters:**
+- `canvas` - Optional HTMLCanvasElement or OffscreenCanvas
+- `options` - Optional configuration for DPR, alpha mode, and power preference
 
 **Throws:** `Error` if initialization fails
 
@@ -52,20 +92,35 @@ The `GPUContext` class provides a class-based interface that internally uses the
 
 See [GPUContext.ts](../../src/core/GPUContext.ts) for the complete implementation.
 
-### `GPUContext.create(canvas?: HTMLCanvasElement): Promise<GPUContext>`
+### `constructor(canvas?: SupportedCanvas, options?: GPUContextOptions)`
+
+Creates a new GPUContext instance. Call `initialize()` or use the static `create()` method to complete initialization.
+
+**Parameters:**
+- `canvas` - Optional HTMLCanvasElement or OffscreenCanvas
+- `options` - Optional configuration for DPR, alpha mode, and power preference
+
+### `GPUContext.create(canvas?: SupportedCanvas, options?: GPUContextOptions): Promise<GPUContext>`
 
 Factory method that creates and initializes a GPUContext instance.
+
+**Parameters:**
+- `canvas` - Optional HTMLCanvasElement or OffscreenCanvas
+- `options` - Optional configuration for DPR, alpha mode, and power preference
 
 **Throws:** `Error` if initialization fails
 
 ### Properties
 
-- `adapter` - WebGPU adapter instance, or `null` if not initialized
-- `device` - WebGPU device instance, or `null` if not initialized
-- `initialized` - `true` if successfully initialized
-- `canvas` - Canvas element, or `null` if not provided
-- `canvasContext` - WebGPU canvas context, or `null` if not configured
-- `preferredFormat` - Preferred canvas format, or `null` if not configured
+- `adapter: GPUAdapter | null` - WebGPU adapter instance, or `null` if not initialized
+- `device: GPUDevice | null` - WebGPU device instance, or `null` if not initialized
+- `initialized: boolean` - `true` if successfully initialized
+- `canvas: SupportedCanvas | null` - Canvas element (HTMLCanvasElement or OffscreenCanvas), or `null` if not provided
+- `canvasContext: GPUCanvasContext | null` - WebGPU canvas context, or `null` if not configured
+- `preferredFormat: GPUTextureFormat | null` - Preferred canvas format, or `null` if not configured
+- `devicePixelRatio: number` - DPR used for canvas sizing
+- `alphaMode: 'opaque' | 'premultiplied'` - Canvas alpha mode
+- `powerPreference: 'low-power' | 'high-performance'` - GPU power preference
 
 ### Methods
 
@@ -73,6 +128,55 @@ Factory method that creates and initializes a GPUContext instance.
 - `getCanvasTexture(): GPUTexture` - Gets the current canvas texture
 - `clearScreen(r: number, g: number, b: number, a: number): void` - Clears the canvas to a solid color
 - `destroy(): void` - Destroys the device and cleans up resources
+
+## OffscreenCanvas and Web Worker Support
+
+GPUContext supports `OffscreenCanvas` for rendering in Web Workers, enabling GPU operations off the main thread.
+
+### Worker Rendering Limitations
+
+OffscreenCanvas is **rendering-only**. Interactive features that require DOM access are not available in workers:
+
+- ❌ Tooltips (requires DOM elements)
+- ❌ Interactive zoom controls (requires DOM events)
+- ❌ Legends, data zoom sliders (require DOM)
+- ✅ Pure GPU rendering operations
+- ✅ Data processing and animations
+
+### Device Pixel Ratio Handling
+
+**Critical:** Main thread must pre-scale canvas before transferring to worker:
+
+1. **Main thread:** Create canvas, multiply dimensions by `window.devicePixelRatio`, call `canvas.transferControlToOffscreen()`
+2. **Worker:** Receive OffscreenCanvas, pass `devicePixelRatio: 1.0` to avoid double-scaling
+
+**Note:** `transferControlToOffscreen()` is **irreversible** - canvas becomes permanently offscreen.
+
+### Worker Usage Pattern
+
+See [examples/worker-rendering/](../../examples/) for complete working example (if available).
+
+Main thread flow:
+
+1. Create HTMLCanvasElement
+2. Scale by `window.devicePixelRatio`
+3. Call `transferControlToOffscreen()`
+4. Post OffscreenCanvas to worker via `postMessage()`
+
+Worker thread flow:
+
+1. Receive OffscreenCanvas via message event
+2. Create GPUContext with `devicePixelRatio: 1.0`
+3. Initialize and render
+
+## Browser Compatibility
+
+WebGPU support required:
+- **Chrome/Edge 113+**
+- **Safari 18+**
+- **Firefox:** Not yet supported
+
+Check `navigator.gpu` availability before initialization. See [checkWebGPU.ts](../../src/utils/checkWebGPU.ts) for detection utility.
 
 ## Error Handling
 
@@ -82,4 +186,15 @@ All initialization functions throw descriptive errors if WebGPU is unavailable, 
 
 Always call `destroyGPUContext()` (functional) or `destroy()` (class) when done with a GPU context. Use try-finally blocks to ensure cleanup.
 
-When providing a canvas element, the context automatically handles device pixel ratio and configures the canvas with the preferred format.
+**Canvas Configuration:**
+- Main thread: Context auto-detects `window.devicePixelRatio` and configures canvas automatically
+- Workers: Pass explicit `devicePixelRatio: 1.0` if main thread already scaled the canvas
+- Canvas is configured with preferred format (`getPreferredCanvasFormat()` with `'bgra8unorm'` fallback)
+
+**Power Preference:**
+- Use `'high-performance'` (default) for rendering-intensive visualizations
+- Use `'low-power'` for battery-conscious applications or background rendering
+
+**Alpha Mode:**
+- Use `'opaque'` (default) for better performance when transparency is not needed
+- Use `'premultiplied'` only when compositing transparent canvas with other page elements

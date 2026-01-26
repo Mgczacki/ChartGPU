@@ -6,6 +6,8 @@ import type {
   ResolvedPieSeriesConfig,
 } from '../config/OptionResolver';
 import type { AnimationConfig, DataPoint, DataPointTuple, OHLCDataPoint, OHLCDataPointTuple, PieCenter, PieRadius } from '../config/types';
+import type { SupportedCanvas } from './GPUContext';
+import { isHTMLCanvasElement as isHTMLCanvasElementGPU } from './GPUContext';
 import { createDataStore } from '../data/createDataStore';
 import { sampleSeriesDataPoints } from '../data/sampleSeries';
 import { ohlcSample } from '../data/ohlcSample';
@@ -49,10 +51,26 @@ import type { EasingFunction } from '../utils/easing';
 
 export interface GPUContextLike {
   readonly device: GPUDevice | null;
-  readonly canvas: HTMLCanvasElement | null;
+  readonly canvas: SupportedCanvas | null;
   readonly canvasContext: GPUCanvasContext | null;
   readonly preferredFormat: GPUTextureFormat | null;
   readonly initialized: boolean;
+  readonly devicePixelRatio?: number;
+}
+
+/** Type guard to check if canvas is HTMLCanvasElement (has DOM-specific properties). */
+const isHTMLCanvasElement = isHTMLCanvasElementGPU;
+
+/** Gets canvas CSS width - clientWidth for HTMLCanvasElement, width/DPR for OffscreenCanvas. */
+function getCanvasCssWidth(canvas: SupportedCanvas | null, devicePixelRatio: number = 1): number {
+  if (!canvas) {
+    return 0;
+  }
+  if (isHTMLCanvasElement(canvas)) {
+    return canvas.clientWidth;
+  }
+  // OffscreenCanvas: width property is in device pixels. Convert to CSS pixels by dividing by DPR.
+  return canvas.width / devicePixelRatio;
 }
 
 export interface RenderCoordinator {
@@ -1182,7 +1200,10 @@ export function createRenderCoordinator(
   }
 
   const targetFormat = gpuContext.preferredFormat ?? DEFAULT_TARGET_FORMAT;
-  const overlayContainer = gpuContext.canvas.parentElement;
+  
+  // DOM-dependent features (overlays, legends) require HTMLCanvasElement.
+  // OffscreenCanvas is for rendering only.
+  const overlayContainer = isHTMLCanvasElement(gpuContext.canvas) ? gpuContext.canvas.parentElement : null;
   const overlay: TextOverlay | null = overlayContainer ? createTextOverlay(overlayContainer) : null;
   const legend: Legend | null = overlayContainer ? createLegend(overlayContainer, 'right') : null;
   const tickMeasureCtx: CanvasRenderingContext2D | null = (() => {
@@ -1459,7 +1480,11 @@ export function createRenderCoordinator(
   highlightRenderer.setVisible(false);
 
   const initialGridArea = computeGridArea(gpuContext, currentOptions);
-  const eventManager = createEventManager(gpuContext.canvas, initialGridArea);
+  
+  // Event manager requires HTMLCanvasElement (DOM events). OffscreenCanvas doesn't support interactive features.
+  const eventManager = isHTMLCanvasElement(gpuContext.canvas) 
+    ? createEventManager(gpuContext.canvas, initialGridArea)
+    : null;
 
   type PointerSource = 'mouse' | 'sync';
 
@@ -1787,7 +1812,7 @@ export function createRenderCoordinator(
       }
     | null => {
     const canvas = gpuContext.canvas;
-    if (!canvas) return null;
+    if (!canvas || !isHTMLCanvasElement(canvas)) return null;
 
     const plotSize = getPlotSizeCssPx(canvas, gridArea);
     if (!plotSize) return null;
@@ -1934,8 +1959,11 @@ export function createRenderCoordinator(
     requestRender();
   };
 
-  eventManager.on('mousemove', onMouseMove);
-  eventManager.on('mouseleave', onMouseLeave);
+  // Register event listeners only if event manager is available (HTMLCanvasElement).
+  if (eventManager) {
+    eventManager.on('mousemove', onMouseMove);
+    eventManager.on('mouseleave', onMouseLeave);
+  }
 
   // Optional internal “inside zoom” (wheel zoom + drag pan).
   let zoomState: ZoomState | null = null;
@@ -2002,7 +2030,8 @@ export function createRenderCoordinator(
     }
 
     // Only enable inside zoom handler when `{ type: 'inside' }` exists.
-    if (cfg.hasInside) {
+    // Requires event manager (HTMLCanvasElement only).
+    if (cfg.hasInside && eventManager) {
       if (!insideZoom) {
         insideZoom = createInsideZoom(eventManager, zoomState);
         insideZoom.enable();
@@ -2665,7 +2694,7 @@ export function createRenderCoordinator(
     }
 
     const gridArea = computeGridArea(gpuContext, currentOptions);
-    eventManager.updateGridArea(gridArea);
+    eventManager?.updateGridArea(gridArea);
     const zoomRange = zoomState?.getRange() ?? null;
 
     const updateP = updateTransition ? clamp01(updateProgress01) : 1;
@@ -2687,7 +2716,9 @@ export function createRenderCoordinator(
 
     // Story 6: compute an x tick count that prevents label overlap (time axis only).
     // IMPORTANT: compute in CSS px, since labels are DOM elements in CSS px.
-    const canvasCssWidth = gpuContext.canvas.clientWidth;
+    // Note: This requires HTMLCanvasElement for accurate CSS pixel measurement.
+    const dpr = gpuContext.devicePixelRatio ?? (typeof window !== 'undefined' ? window.devicePixelRatio : 1);
+    const canvasCssWidth = gpuContext.canvas ? getCanvasCssWidth(gpuContext.canvas, dpr) : 0;
     const visibleXRangeMs = Math.abs(visibleXDomain.max - visibleXDomain.min);
 
     let xTickCount = DEFAULT_TICK_COUNT;
@@ -2853,10 +2884,11 @@ export function createRenderCoordinator(
     }
 
     // Tooltip: on hover, find matches and render tooltip near cursor.
+    // Note: Tooltips require HTMLCanvasElement (DOM-specific positioning). OffscreenCanvas doesn't support tooltips.
     if (tooltip && effectivePointer.hasPointer && effectivePointer.isInGrid) {
       const canvas = gpuContext.canvas;
 
-      if (interactionScales && canvas && currentOptions.tooltip?.show !== false) {
+      if (interactionScales && canvas && isHTMLCanvasElement(canvas) && currentOptions.tooltip?.show !== false) {
         const formatter = currentOptions.tooltip?.formatter;
         const trigger = currentOptions.tooltip?.trigger ?? 'item';
 
@@ -3205,9 +3237,9 @@ export function createRenderCoordinator(
           // Pie renderer sets/resets its own scissor. Animate intro via radius scale (CSS px).
           if (introP < 1) {
             const canvas = gpuContext.canvas;
-            const plotWidthCss = interactionScales?.plotWidthCss ?? (canvas ? getPlotSizeCssPx(canvas, gridArea)?.plotWidthCss : null);
+            const plotWidthCss = interactionScales?.plotWidthCss ?? (canvas && isHTMLCanvasElement(canvas) ? getPlotSizeCssPx(canvas, gridArea)?.plotWidthCss : null);
             const plotHeightCss =
-              interactionScales?.plotHeightCss ?? (canvas ? getPlotSizeCssPx(canvas, gridArea)?.plotHeightCss : null);
+              interactionScales?.plotHeightCss ?? (canvas && isHTMLCanvasElement(canvas) ? getPlotSizeCssPx(canvas, gridArea)?.plotHeightCss : null);
             const maxRadiusCss =
               typeof plotWidthCss === 'number' && typeof plotHeightCss === 'number'
                 ? 0.5 * Math.min(plotWidthCss, plotHeightCss)
@@ -3335,6 +3367,9 @@ export function createRenderCoordinator(
       // IMPORTANT: overlay positioning must be done in *CSS pixels* and in the overlayContainer's
       // coordinate space (its padding box). Using   `canvas.width / dpr` + `getBoundingClientRect()`
       // deltas can drift under CSS scaling/zoom and misalign with container padding/border.
+      // Note: Overlays require HTMLCanvasElement (DOM-specific positioning). OffscreenCanvas doesn't support overlays.
+      if (!canvas || !isHTMLCanvasElement(canvas)) return;
+      
       const canvasCssWidth = canvas.clientWidth;
       const canvasCssHeight = canvas.clientHeight;
       if (canvasCssWidth <= 0 || canvasCssHeight <= 0) return;
@@ -3492,7 +3527,7 @@ export function createRenderCoordinator(
     lastOptionsZoomRange = null;
     zoomRangeListeners.clear();
 
-    eventManager.dispose();
+    eventManager?.dispose();
     crosshairRenderer.dispose();
     highlightRenderer.dispose();
 
