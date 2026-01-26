@@ -18,9 +18,10 @@ export type {
 export type {
   AreaStyleConfig,
   AnimationConfig,
-  BarItemStyleConfig,
   AxisConfig,
+  AxisLabel,
   AxisType,
+  BarItemStyleConfig,
   CandlestickItemStyleConfig,
   CandlestickSeriesConfig,
   CandlestickStyle,
@@ -28,10 +29,12 @@ export type {
   DataZoomConfig,
   DataPoint,
   GridConfig,
+  LegendItem,
   LineStyleConfig,
   AreaSeriesConfig,
   LineSeriesConfig,
   BarSeriesConfig,
+  NormalizedPointerEvent,
   OHLCDataPoint,
   PieCenter,
   PieDataItem,
@@ -44,6 +47,8 @@ export type {
   SeriesConfig,
   SeriesSampling,
   SeriesType,
+  TooltipConfig,
+  TooltipData,
   TooltipParams,
 } from './config/types';
 
@@ -101,6 +106,9 @@ export {
   requestRender,
   destroyRenderScheduler,
 } from './core/RenderScheduler';
+
+// Render coordinator types
+export type { RenderCoordinatorCallbacks } from './core/createRenderCoordinator';
 
 // Class-based API (for backward compatibility)
 export { RenderScheduler } from './core/RenderScheduler';

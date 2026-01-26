@@ -267,6 +267,57 @@ export interface AnimationConfig {
   readonly delay?: number;
 }
 
+/**
+ * Tooltip data emitted when domOverlays is false.
+ */
+export interface TooltipData {
+  readonly content: string;
+  /** Always an array for consistency (single-item trigger = array with 1 element). */
+  readonly params: ReadonlyArray<TooltipParams>;
+  /** Canvas-local CSS pixel x coordinate. */
+  readonly x: number;
+  /** Canvas-local CSS pixel y coordinate. */
+  readonly y: number;
+}
+
+/**
+ * Legend item emitted when domOverlays is false.
+ */
+export interface LegendItem {
+  readonly name: string;
+  readonly color: string;
+  readonly seriesIndex: number;
+}
+
+/**
+ * Axis label data emitted when domOverlays is false.
+ */
+export interface AxisLabel {
+  readonly axis: 'x' | 'y';
+  readonly text: string;
+  /** CSS pixels from canvas edge (x-axis: from left; y-axis: from bottom). */
+  readonly position: number;
+  /** Degrees, for rotated x-axis labels. */
+  readonly rotation?: number;
+  /** True for axis title vs tick label. */
+  readonly isTitle?: boolean;
+}
+
+/**
+ * Normalized pointer event for worker thread event forwarding.
+ */
+export interface NormalizedPointerEvent {
+  readonly type: 'pointerdown' | 'pointermove' | 'pointerup' | 'pointerleave';
+  /** CSS pixels, canvas-local. */
+  readonly x: number;
+  /** CSS pixels, canvas-local. */
+  readonly y: number;
+  /** Mouse button state. */
+  readonly buttons: number;
+  /** Event timestamp for gesture detection. */
+  readonly timestamp: number;
+}
+
 export interface ChartGPUOptions {
   readonly grid?: GridConfig;
   readonly xAxis?: AxisConfig;

@@ -33,6 +33,7 @@ This is a guide for AI assistants working with ChartGPU. Use this document to qu
 - **GPU context** (functional API): [gpu-context.md](gpu-context.md#functional-api-preferred)
 - **GPU context** (class API): [gpu-context.md](gpu-context.md#class-based-api-backward-compatibility)
 - **Render scheduler**: [render-scheduler.md](render-scheduler.md)
+- **Worker thread support** (DOM overlay separation): [INTERNALS.md](INTERNALS.md#worker-thread-support--dom-overlay-separation)
 
 ### Interaction
 - **Event handling** (click, hover, crosshair): [interaction.md](interaction.md#event-handling)
@@ -44,6 +45,7 @@ This is a guide for AI assistants working with ChartGPU. Use this document to qu
 
 ### Internal/Contributors
 - **Internal modules** (data store, renderers, coordinator): [INTERNALS.md](INTERNALS.md)
+- **Worker thread support** (DOM overlay separation): [INTERNALS.md](INTERNALS.md#worker-thread-support--dom-overlay-separation)
 - **GPU buffer streaming**: [INTERNALS.md](INTERNALS.md#gpu-buffer-streaming-internal--contributor-notes)
 - **CPU downsampling (LTTB)**: [INTERNALS.md](INTERNALS.md#cpu-downsampling-internal--contributor-notes)
 - **Interaction utilities**: [INTERNALS.md](INTERNALS.md#interaction-utilities-internal--contributor-notes)
@@ -90,6 +92,11 @@ This is a guide for AI assistants working with ChartGPU. Use this document to qu
 ### Working with WebGPU Directly
 1. Initialize GPU context in [gpu-context.md](gpu-context.md#functional-api-preferred)
 2. Set up render loop in [render-scheduler.md](render-scheduler.md)
+
+### Enabling Worker Thread Support
+1. Configure `domOverlays: false` in [INTERNALS.md](INTERNALS.md#rendercoordinatorcallbacks)
+2. Implement worker thread callbacks in [INTERNALS.md](INTERNALS.md#worker-thread-support--dom-overlay-separation)
+3. Forward pointer events via [handlePointerEvent()](INTERNALS.md#rendercoordinatorhandlepointerevent)
 
 ## Architecture Overview
 

@@ -12,6 +12,10 @@ This directory contains technical implementation documentation intended for cont
 
 - **[GPU_TIMING_IMPLEMENTATION.md](./GPU_TIMING_IMPLEMENTATION.md)** - GPU timing methodology used in the million-points benchmark. Explains the decision to use `queue.onSubmittedWorkDone()` for timing, what it measures, and how to interpret CPU vs GPU timing metrics.
 
+### Worker Thread Architecture
+
+- **[WORKER_THREAD_INTEGRATION.md](./WORKER_THREAD_INTEGRATION.md)** - Comprehensive guide to running ChartGPU in web worker threads using OffscreenCanvas. Covers the `domOverlays` option, event forwarding with `handlePointerEvent()`, callback-based overlay rendering, device loss handling, and worker lifecycle management. Includes architecture diagrams, implementation checklist, and performance considerations.
+
 ## Audience
 
 These documents are intended for:

@@ -5,7 +5,7 @@ import type {
   ResolvedChartGPUOptions,
   ResolvedPieSeriesConfig,
 } from '../config/OptionResolver';
-import type { AnimationConfig, DataPoint, DataPointTuple, OHLCDataPoint, OHLCDataPointTuple, PieCenter, PieRadius } from '../config/types';
+import type { AnimationConfig, AxisLabel, DataPoint, DataPointTuple, LegendItem, NormalizedPointerEvent, OHLCDataPoint, OHLCDataPointTuple, PieCenter, PieRadius, TooltipData } from '../config/types';
 import type { SupportedCanvas } from './GPUContext';
 import { isHTMLCanvasElement as isHTMLCanvasElementGPU } from './GPUContext';
 import { createDataStore } from '../data/createDataStore';
@@ -117,6 +117,11 @@ export interface RenderCoordinator {
    * Returns an unsubscribe function.
    */
   onZoomRangeChange(cb: (range: Readonly<{ start: number; end: number }>) => void): () => void;
+  /**
+   * Accepts a normalized pointer event for worker thread event forwarding.
+   * Only available when domOverlays is false.
+   */
+  handlePointerEvent(event: NormalizedPointerEvent): void;
   render(): void;
   dispose(): void;
 }
@@ -127,6 +132,38 @@ export type RenderCoordinatorCallbacks = Readonly<{
    * interaction state changes (e.g. crosshair on pointer move).
    */
   readonly onRequestRender?: () => void;
+  /**
+   * When false, DOM overlays (tooltip, legend, text overlay, event manager) are disabled.
+   * Instead, callbacks are used to emit data for external rendering.
+   * Default: true (DOM overlays enabled).
+   */
+  readonly domOverlays?: boolean;
+  /**
+   * Called when tooltip data changes (only when domOverlays is false).
+   * Receives tooltip data including content, params array, and position, or null when hidden.
+   */
+  readonly onTooltipUpdate?: (data: TooltipData | null) => void;
+  /**
+   * Called when legend items change (only when domOverlays is false).
+   */
+  readonly onLegendUpdate?: (items: ReadonlyArray<LegendItem>) => void;
+  /**
+   * Called when axis labels change (only when domOverlays is false).
+   */
+  readonly onAxisLabelsUpdate?: (xLabels: ReadonlyArray<AxisLabel>, yLabels: ReadonlyArray<AxisLabel>) => void;
+  /**
+   * Called when hover state changes (only when domOverlays is false).
+   */
+  readonly onHoverChange?: (payload: ChartGPUEventPayload | null) => void;
+  /**
+   * Called when crosshair moves (only when domOverlays is false).
+   * Receives canvas-local CSS pixel x coordinate, or null when crosshair is hidden.
+   */
+  readonly onCrosshairMove?: (x: number | null) => void;
+  /**
+   * Called when GPU device is lost.
+   */
+  readonly onDeviceLost?: (reason: string) => void;
 }>;
 
 type Bounds = Readonly<{ xMin: number; xMax: number; yMin: number; yMax: number }>;
@@ -1199,14 +1236,29 @@ export function createRenderCoordinator(
     throw new Error('RenderCoordinator: gpuContext.canvasContext is required.');
   }
 
+  // Listen for device loss and emit callback
+  // Note: We don't call dispose() here to avoid double-cleanup if user calls dispose() in callback.
+  // The coordinator is effectively non-functional after device loss until re-created.
+  device.lost.then((info) => {
+    callbacks?.onDeviceLost?.(info.message || info.reason || 'unknown');
+  }).catch(() => {
+    // Ignore errors in device.lost promise (can occur if device is destroyed before lost promise resolves)
+  });
+
   const targetFormat = gpuContext.preferredFormat ?? DEFAULT_TARGET_FORMAT;
   
-  // DOM-dependent features (overlays, legends) require HTMLCanvasElement.
+  // DOM-dependent features (overlays, legends) require HTMLCanvasElement and domOverlays !== false.
   // OffscreenCanvas is for rendering only.
-  const overlayContainer = isHTMLCanvasElement(gpuContext.canvas) ? gpuContext.canvas.parentElement : null;
+  const domOverlaysEnabled = callbacks?.domOverlays !== false;
+  const overlayContainer = domOverlaysEnabled && isHTMLCanvasElement(gpuContext.canvas) ? gpuContext.canvas.parentElement : null;
   const overlay: TextOverlay | null = overlayContainer ? createTextOverlay(overlayContainer) : null;
   const legend: Legend | null = overlayContainer ? createLegend(overlayContainer, 'right') : null;
+  // Text measurement for axis labels. Only available in DOM contexts (not worker threads).
   const tickMeasureCtx: CanvasRenderingContext2D | null = (() => {
+    if (typeof document === 'undefined') {
+      // Worker thread: DOM not available.
+      return null;
+    }
     try {
       const c = document.createElement('canvas');
       return c.getContext('2d');
@@ -1467,7 +1519,54 @@ export function createRenderCoordinator(
   let lastTooltipX: number | null = null;
   let lastTooltipY: number | null = null;
 
-  legend?.update(currentOptions.series, currentOptions.theme);
+  // Helper functions for tooltip/legend/crosshair callbacks
+  const showTooltipInternal = (x: number, y: number, content: string, params: TooltipParams | TooltipParams[]) => {
+    tooltip?.show(x, y, content);
+    if (!domOverlaysEnabled && callbacks?.onTooltipUpdate) {
+      const paramsArray = Array.isArray(params) ? params : [params];
+      callbacks.onTooltipUpdate({ content, params: paramsArray, x, y });
+    }
+  };
+
+  const hideTooltipInternal = () => {
+    tooltip?.hide();
+    if (!domOverlaysEnabled && callbacks?.onTooltipUpdate) {
+      callbacks.onTooltipUpdate(null);
+    }
+  };
+
+  const hideTooltip = () => {
+    lastTooltipContent = null;
+    lastTooltipX = null;
+    lastTooltipY = null;
+    hideTooltipInternal();
+  };
+
+  const emitCrosshairCallback = (x: number | null) => {
+    if (!domOverlaysEnabled && callbacks?.onCrosshairMove) {
+      callbacks.onCrosshairMove(x);
+    }
+  };
+
+  const emitHoverCallback = (payload: ChartGPUEventPayload | null) => {
+    if (!domOverlaysEnabled && callbacks?.onHoverChange) {
+      callbacks.onHoverChange(payload);
+    }
+  };
+
+  const updateLegend = (series: ResolvedChartGPUOptions['series'], theme: ResolvedChartGPUOptions['theme']) => {
+    legend?.update(series, theme);
+    if (!domOverlaysEnabled && callbacks?.onLegendUpdate) {
+      const items: LegendItem[] = series.map((s, idx) => ({
+        name: s.name ?? '',
+        color: s.color ?? '#888',
+        seriesIndex: idx,
+      }));
+      callbacks.onLegendUpdate(items);
+    }
+  };
+
+  updateLegend(currentOptions.series, currentOptions.theme);
 
   let dataStore = createDataStore(device);
 
@@ -1481,8 +1580,9 @@ export function createRenderCoordinator(
 
   const initialGridArea = computeGridArea(gpuContext, currentOptions);
   
-  // Event manager requires HTMLCanvasElement (DOM events). OffscreenCanvas doesn't support interactive features.
-  const eventManager = isHTMLCanvasElement(gpuContext.canvas) 
+  // Event manager requires HTMLCanvasElement (DOM events) and domOverlays enabled.
+  // OffscreenCanvas doesn't support interactive features.
+  const eventManager = domOverlaysEnabled && isHTMLCanvasElement(gpuContext.canvas) 
     ? createEventManager(gpuContext.canvas, initialGridArea)
     : null;
 
@@ -1941,6 +2041,8 @@ export function createRenderCoordinator(
     }
 
     crosshairRenderer.setVisible(payload.isInGrid);
+    emitCrosshairCallback(payload.isInGrid ? payload.x : null);
+    emitHoverCallback(payload.isInGrid ? payload : null);
     requestRender();
   };
 
@@ -1951,10 +2053,9 @@ export function createRenderCoordinator(
 
     pointerState = { ...pointerState, isInGrid: false, hasPointer: false };
     crosshairRenderer.setVisible(false);
-    lastTooltipContent = null;
-    lastTooltipX = null;
-    lastTooltipY = null;
-    tooltip?.hide();
+    hideTooltip();
+    emitCrosshairCallback(null);
+    emitHoverCallback(null);
     setInteractionXInternal(null, 'mouse');
     requestRender();
   };
@@ -2444,17 +2545,11 @@ export function createRenderCoordinator(
         lastTooltipY = null;
       }
       if (!shouldHaveTooltip && tooltip) {
-        lastTooltipContent = null;
-        lastTooltipX = null;
-        lastTooltipY = null;
-        tooltip.hide();
+        hideTooltip();
       }
-    } else {
-      lastTooltipContent = null;
-      lastTooltipX = null;
-      lastTooltipY = null;
-      tooltip?.hide();
-    }
+        } else {
+          hideTooltip();
+        }
 
     const nextCount = resolvedOptions.series.length;
     ensureAreaRendererCount(nextCount);
@@ -2833,8 +2928,10 @@ export function createRenderCoordinator(
       };
       crosshairRenderer.prepare(effectivePointer.x, effectivePointer.y, gridArea, crosshairOptions);
       crosshairRenderer.setVisible(true);
+      emitCrosshairCallback(effectivePointer.x);
     } else {
       crosshairRenderer.setVisible(false);
+      emitCrosshairCallback(null);
     }
 
     // Highlight: on hover, find nearest point and draw a ring highlight clipped to plot rect.
@@ -2902,10 +2999,7 @@ export function createRenderCoordinator(
           // - In 'item' mode, pick a deterministic single entry (first matching series).
           const matches = findPointsAtX(seriesForRender, effectivePointer.gridX, interactionScales.xScale);
           if (matches.length === 0) {
-            lastTooltipContent = null;
-            lastTooltipX = null;
-            lastTooltipY = null;
-            tooltip.hide();
+            hideTooltip();
           } else if (trigger === 'axis') {
             const paramsArray = matches.map((m) => buildTooltipParams(m.seriesIndex, m.dataIndex, m.point));
             const content = formatter
@@ -2915,12 +3009,9 @@ export function createRenderCoordinator(
               lastTooltipContent = content;
               lastTooltipX = containerX;
               lastTooltipY = containerY;
-              tooltip.show(containerX, containerY, content);
+              showTooltipInternal(containerX, containerY, content, paramsArray);
             } else if (!content) {
-              lastTooltipContent = null;
-              lastTooltipX = null;
-              lastTooltipY = null;
-              tooltip.hide();
+              hideTooltip();
             }
           } else {
             const m0 = matches[0];
@@ -2930,12 +3021,9 @@ export function createRenderCoordinator(
               lastTooltipContent = content;
               lastTooltipX = containerX;
               lastTooltipY = containerY;
-              tooltip.show(containerX, containerY, content);
+              showTooltipInternal(containerX, containerY, content, params);
             } else if (!content) {
-              lastTooltipContent = null;
-              lastTooltipX = null;
-              lastTooltipY = null;
-              tooltip.hide();
+              hideTooltip();
             }
           }
         } else if (trigger === 'axis') {
@@ -2965,12 +3053,9 @@ export function createRenderCoordinator(
               lastTooltipContent = content;
               lastTooltipX = containerX;
               lastTooltipY = containerY;
-              tooltip.show(containerX, containerY, content);
+              showTooltipInternal(containerX, containerY, content, [params]);
             } else if (!content) {
-              lastTooltipContent = null;
-              lastTooltipX = null;
-              lastTooltipY = null;
-              tooltip.hide();
+              hideTooltip();
             }
           } else {
             // Candlestick body hit-testing (mouse, axis trigger): include only when inside candle body.
@@ -3003,19 +3088,13 @@ export function createRenderCoordinator(
                     lastTooltipContent = content;
                     lastTooltipX = tooltipX;
                     lastTooltipY = tooltipY;
-                    tooltip.show(tooltipX, tooltipY, content);
+                    showTooltipInternal(tooltipX, tooltipY, content, paramsArray);
                   }
                 } else {
-                  lastTooltipContent = null;
-                  lastTooltipX = null;
-                  lastTooltipY = null;
-                  tooltip.hide();
+                  hideTooltip();
                 }
               } else {
-                lastTooltipContent = null;
-                lastTooltipX = null;
-                lastTooltipY = null;
-                tooltip.hide();
+                hideTooltip();
               }
             } else {
               const paramsArray = matches.map((m) => buildTooltipParams(m.seriesIndex, m.dataIndex, m.point));
@@ -3044,13 +3123,10 @@ export function createRenderCoordinator(
                   lastTooltipContent = content;
                   lastTooltipX = tooltipX;
                   lastTooltipY = tooltipY;
-                  tooltip.show(tooltipX, tooltipY, content);
+                  showTooltipInternal(tooltipX, tooltipY, content, paramsArray);
                 }
               } else {
-                lastTooltipContent = null;
-                lastTooltipX = null;
-                lastTooltipY = null;
-                tooltip.hide();
+                hideTooltip();
               }
             }
           }
@@ -3080,12 +3156,9 @@ export function createRenderCoordinator(
               lastTooltipContent = content;
               lastTooltipX = containerX;
               lastTooltipY = containerY;
-              tooltip.show(containerX, containerY, content);
+              showTooltipInternal(containerX, containerY, content, params);
             } else if (!content) {
-              lastTooltipContent = null;
-              lastTooltipX = null;
-              lastTooltipY = null;
-              tooltip.hide();
+              hideTooltip();
             }
           } else {
             // Candlestick body hit-testing (mouse, item trigger): prefer candle body over nearest-point logic.
@@ -3114,13 +3187,10 @@ export function createRenderCoordinator(
                   lastTooltipContent = content;
                   lastTooltipX = tooltipX;
                   lastTooltipY = tooltipY;
-                  tooltip.show(tooltipX, tooltipY, content);
+                  showTooltipInternal(tooltipX, tooltipY, content, candlestickResult.params);
                 }
               } else {
-                lastTooltipContent = null;
-                lastTooltipX = null;
-                lastTooltipY = null;
-                tooltip.hide();
+                hideTooltip();
               }
               return;
             }
@@ -3133,10 +3203,7 @@ export function createRenderCoordinator(
               interactionScales.yScale
             );
             if (!match) {
-              lastTooltipContent = null;
-              lastTooltipX = null;
-              lastTooltipY = null;
-              tooltip.hide();
+              hideTooltip();
             } else {
               const params = buildTooltipParams(match.seriesIndex, match.dataIndex, match.point);
               const content = formatter
@@ -3146,28 +3213,19 @@ export function createRenderCoordinator(
                 lastTooltipContent = content;
                 lastTooltipX = containerX;
                 lastTooltipY = containerY;
-                tooltip.show(containerX, containerY, content);
+                showTooltipInternal(containerX, containerY, content, params);
               } else if (!content) {
-                lastTooltipContent = null;
-                lastTooltipX = null;
-                lastTooltipY = null;
-                tooltip.hide();
+                hideTooltip();
               }
             }
           }
         }
-      } else {
-        lastTooltipContent = null;
-        lastTooltipX = null;
-        lastTooltipY = null;
-        tooltip.hide();
-      }
-    } else {
-      lastTooltipContent = null;
-      lastTooltipX = null;
-      lastTooltipY = null;
-      tooltip?.hide();
-    }
+            } else {
+              hideTooltip();
+            }
+        } else {
+          hideTooltip();
+        }
 
     const defaultBaseline = currentOptions.yAxis.min ?? yBaseDomain.min;
     const barSeriesConfigs: ResolvedBarSeriesConfig[] = [];
@@ -3387,6 +3445,10 @@ export function createRenderCoordinator(
       overlay.clear();
       if (!hasCartesianSeries) return;
 
+      // Collect axis labels for callback emission when domOverlays is false
+      const collectedXLabels: AxisLabel[] = [];
+      const collectedYLabels: AxisLabel[] = [];
+
       const xTickLengthCssPx = currentOptions.xAxis.tickLength ?? DEFAULT_TICK_LENGTH_CSS_PX;
       const xLabelY = plotBottomCss + xTickLengthCssPx + LABEL_PADDING_CSS_PX + currentOptions.theme.fontSize * 0.5;
       const isTimeXAxis = currentOptions.xAxis.type === 'time';
@@ -3414,6 +3476,9 @@ export function createRenderCoordinator(
         });
         span.dir = 'auto';
         span.style.fontFamily = currentOptions.theme.fontFamily;
+
+        // Collect for callback
+        collectedXLabels.push({ axis: 'x', text: label, position: offsetX + xCss, isTitle: false });
       }
 
       const yTickCount = DEFAULT_TICK_COUNT;
@@ -3441,6 +3506,9 @@ export function createRenderCoordinator(
         span.dir = 'auto';
         span.style.fontFamily = currentOptions.theme.fontFamily;
         ySpans.push(span);
+
+        // Collect for callback
+        collectedYLabels.push({ axis: 'y', text: label, position: offsetY + yCss, isTitle: false });
       }
 
       const axisNameFontSize = Math.max(
@@ -3461,6 +3529,9 @@ export function createRenderCoordinator(
         span.dir = 'auto';
         span.style.fontFamily = currentOptions.theme.fontFamily;
         span.style.fontWeight = '600';
+
+        // Collect for callback
+        collectedXLabels.push({ axis: 'x', text: xAxisName, position: offsetX + xCenter, isTitle: true });
       }
 
       const yAxisName = currentOptions.yAxis.name?.trim() ?? '';
@@ -3483,8 +3554,78 @@ export function createRenderCoordinator(
         span.dir = 'auto';
         span.style.fontFamily = currentOptions.theme.fontFamily;
         span.style.fontWeight = '600';
+
+        // Collect for callback
+        collectedYLabels.push({ axis: 'y', text: yAxisName, position: offsetY + yCenter, rotation: -90, isTitle: true });
+      }
+
+      // Emit axis labels callback
+      if (!domOverlaysEnabled && callbacks?.onAxisLabelsUpdate) {
+        callbacks.onAxisLabelsUpdate(collectedXLabels, collectedYLabels);
       }
     }
+  };
+
+  const handlePointerEvent: RenderCoordinator['handlePointerEvent'] = (event) => {
+    assertNotDisposed();
+    if (domOverlaysEnabled) {
+      // When DOM overlays are enabled, ignore handlePointerEvent (use native DOM events instead)
+      return;
+    }
+
+    const canvas = gpuContext.canvas;
+    if (!canvas) return;
+
+    // Validate event coordinates (guard against NaN/Infinity from worker thread serialization issues)
+    if (!Number.isFinite(event.x) || !Number.isFinite(event.y)) {
+      return;
+    }
+
+    const gridArea = computeGridArea(gpuContext, currentOptions);
+    const cssWidth = getCanvasCssWidth(canvas, gpuContext.devicePixelRatio ?? 1);
+    const cssHeight = canvas.height / (gpuContext.devicePixelRatio ?? 1);
+
+    // Convert canvas-local coordinates to grid-local coordinates
+    const gridX = event.x - gridArea.left;
+    const gridY = event.y - gridArea.top;
+
+    const plotWidthCss = cssWidth - gridArea.left - gridArea.right;
+    const plotHeightCss = cssHeight - gridArea.top - gridArea.bottom;
+
+    const isInGrid = 
+      gridX >= 0 &&
+      gridX <= plotWidthCss &&
+      gridY >= 0 &&
+      gridY <= plotHeightCss;
+
+    if (event.type === 'pointerleave') {
+      pointerState = { ...pointerState, isInGrid: false, hasPointer: false };
+      crosshairRenderer.setVisible(false);
+      lastTooltipContent = null;
+      lastTooltipX = null;
+      lastTooltipY = null;
+      
+      hideTooltipInternal();
+      emitCrosshairCallback(null);
+      emitHoverCallback(null);
+      
+      setInteractionXInternal(null, 'mouse');
+      requestRender();
+      return;
+    }
+
+    // Update pointer state
+    pointerState = {
+      source: 'mouse',
+      x: event.x,
+      y: event.y,
+      gridX,
+      gridY,
+      isInGrid,
+      hasPointer: true,
+    };
+
+    requestRender();
   };
 
   const dispose: RenderCoordinator['dispose'] = () => {
@@ -3585,7 +3726,8 @@ export function createRenderCoordinator(
     if (normalized === null && pointerState.hasPointer === false) {
       crosshairRenderer.setVisible(false);
       highlightRenderer.setVisible(false);
-      tooltip?.hide();
+      hideTooltipInternal();
+      emitCrosshairCallback(null);
     }
     requestRender();
   };
@@ -3626,6 +3768,7 @@ export function createRenderCoordinator(
     getZoomRange,
     setZoomRange,
     onZoomRangeChange,
+    handlePointerEvent,
     render,
     dispose,
   };

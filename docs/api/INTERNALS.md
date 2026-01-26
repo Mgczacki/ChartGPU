@@ -173,7 +173,7 @@ See [`createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts) fo
 
 - **Factory**: `createRenderCoordinator(gpuContext: GPUContextLike, options: ResolvedChartGPUOptions, callbacks?: RenderCoordinatorCallbacks): RenderCoordinator`
 
-- **Callbacks (optional)**: `RenderCoordinatorCallbacks` currently supports `onRequestRender?: () => void` for render-on-demand integration (e.g. schedule a render on pointer-driven interaction state changes). See [`createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts).
+- **Callbacks (optional)**: `RenderCoordinatorCallbacks` supports render-on-demand integration and worker thread support via DOM overlay separation. See [Worker Thread Support](#worker-thread-support--dom-overlay-separation) below and [`createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts).
 
 **`RenderCoordinator` methods (essential):**
 
@@ -194,6 +194,158 @@ See [`createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts) fo
   - Grid lines use `resolvedOptions.theme.gridLineColor`.
   - Axes use `resolvedOptions.theme.axisLineColor` (baseline) and `resolvedOptions.theme.axisTickColor` (ticks).
   - Axis tick value labels are rendered as DOM text (via the internal [text overlay](#text-overlay-internal--contributor-notes)) and styled using `resolvedOptions.theme.textColor`, `resolvedOptions.theme.fontSize`, and `resolvedOptions.theme.fontFamily` (see [`ThemeConfig`](../../src/themes/types.ts)).
+
+## Worker Thread Support / DOM Overlay Separation
+
+The RenderCoordinator supports running without DOM access for worker thread compatibility. When `domOverlays: false` is set in `RenderCoordinatorCallbacks`, all DOM-dependent features (tooltip, legend, axis labels, event listeners) are disabled, and data is emitted via callbacks for external rendering.
+
+See complete types in [`types.ts`](../../src/config/types.ts) and implementation in [`createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts).
+
+### RenderCoordinatorCallbacks
+
+Type definition: `RenderCoordinatorCallbacks` in [`createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts)
+
+**Essential properties:**
+
+- **`onRequestRender?: () => void`**: Called when interaction state changes require a render (e.g., pointer movement triggers crosshair update). Used by render-on-demand systems like `ChartGPU`.
+
+- **`domOverlays?: boolean`**: Default: `true`. When `false`, disables all DOM overlays (tooltip, legend, text overlay, event manager) and enables callback-based data emission for external rendering. Required for worker thread support.
+
+**Worker thread callbacks (only when `domOverlays: false`):**
+
+- **`onTooltipUpdate?: (data: TooltipData | null) => void`**: Emitted when tooltip data changes. Receives tooltip content, params array, and canvas-local position, or `null` when tooltip should be hidden.
+
+- **`onLegendUpdate?: (items: ReadonlyArray<LegendItem>) => void`**: Emitted when legend items change (series updates, theme changes).
+
+- **`onAxisLabelsUpdate?: (xLabels: ReadonlyArray<AxisLabel>, yLabels: ReadonlyArray<AxisLabel>) => void`**: Emitted when axis labels change (option changes, zoom/pan, data updates).
+
+- **`onHoverChange?: (payload: ChartGPUEventPayload | null) => void`**: Emitted when hover state changes (pointer enters/leaves data point). `null` when hover state clears.
+
+- **`onCrosshairMove?: (x: number | null) => void`**: Emitted when crosshair moves. Receives canvas-local CSS pixel x coordinate, or `null` when crosshair is hidden.
+
+- **`onDeviceLost?: (reason: string) => void`**: Called when GPU device is lost. RenderCoordinator becomes non-functional after device loss and must be re-created.
+
+**Key behaviors:**
+
+- All worker thread callbacks are only emitted when `domOverlays: false`
+- Callbacks fire during `render()` when relevant state changes
+- Coordinates are always canvas-local CSS pixels
+- Tooltip params is always an array (single-item trigger = array with 1 element)
+
+### TooltipData
+
+Type definition: [`TooltipData`](../../src/config/types.ts)
+
+Tooltip data structure emitted via `onTooltipUpdate` callback.
+
+**Properties:**
+
+- **`content: string`**: Tooltip HTML content (formatted via `TooltipConfig.formatter` or default formatter)
+- **`params: ReadonlyArray<TooltipParams>`**: Array of tooltip params for data points. Always an array for consistency (single-item trigger = array with 1 element)
+- **`x: number`**: Canvas-local CSS pixel x coordinate for tooltip positioning
+- **`y: number`**: Canvas-local CSS pixel y coordinate for tooltip positioning
+
+**Usage notes:**
+
+- Coordinate origin is top-left of canvas
+- HTML content should be rendered with appropriate sanitization
+- Position accounts for padding but not tooltip dimensions (caller responsible for viewport bounds checking)
+
+### LegendItem
+
+Type definition: [`LegendItem`](../../src/config/types.ts)
+
+Legend item data structure emitted via `onLegendUpdate` callback.
+
+**Properties:**
+
+- **`name: string`**: Series name (from `SeriesConfig.name`)
+- **`color: string`**: Series color (resolved from palette or explicit color)
+- **`seriesIndex: number`**: Zero-based series index in options array
+
+**Usage notes:**
+
+- Legend items are emitted in series order
+- Colors are always resolved CSS color strings
+- Series visibility toggling not yet supported (future feature)
+
+### AxisLabel
+
+Type definition: [`AxisLabel`](../../src/config/types.ts)
+
+Axis label data structure emitted via `onAxisLabelsUpdate` callback.
+
+**Properties:**
+
+- **`axis: 'x' | 'y'`**: Which axis this label belongs to
+- **`text: string`**: Label text (tick value or axis title)
+- **`position: number`**: CSS pixels from canvas edge (x-axis: from left; y-axis: from bottom)
+- **`rotation?: number`**: Optional rotation in degrees (for rotated x-axis labels). Positive values rotate clockwise
+- **`isTitle?: boolean`**: `true` for axis title, `false` or `undefined` for tick labels
+
+**Usage notes:**
+
+- Position is relative to canvas edge (not plot area)
+- Y-axis positions measured from bottom for consistency with canvas coordinate system
+- Title labels typically styled larger/bolder than tick labels
+- Rotation only used for x-axis labels when space is constrained
+
+### NormalizedPointerEvent
+
+Type definition: [`NormalizedPointerEvent`](../../src/config/types.ts)
+
+Normalized pointer event structure for worker thread event forwarding.
+
+**Properties:**
+
+- **`type: 'pointerdown' | 'pointermove' | 'pointerup' | 'pointerleave'`**: Event type
+- **`x: number`**: Canvas-local CSS pixel x coordinate
+- **`y: number`**: Canvas-local CSS pixel y coordinate
+- **`buttons: number`**: Mouse button state (bitmask: 1=primary, 2=secondary, 4=auxiliary)
+- **`timestamp: number`**: Event timestamp in milliseconds (for gesture detection and debouncing)
+
+**Usage notes:**
+
+- Used exclusively when `domOverlays: false` (worker thread mode)
+- Forward DOM pointer events from main thread by normalizing to this structure
+- Coordinates must be relative to canvas top-left (use `getBoundingClientRect()`)
+- Invalid coordinates (NaN/Infinity) are silently ignored by RenderCoordinator
+
+### RenderCoordinator.handlePointerEvent()
+
+Method signature: [`handlePointerEvent(event: NormalizedPointerEvent): void`](../../src/core/createRenderCoordinator.ts)
+
+Processes normalized pointer events for interaction when `domOverlays: false`.
+
+**Parameters:**
+
+- **`event: NormalizedPointerEvent`**: Normalized pointer event from main thread
+
+**Behavior:**
+
+- Ignored when `domOverlays: true` (uses native DOM event listeners instead)
+- Updates internal hover state, crosshair position, and zoom/pan state
+- Triggers `onRequestRender()` callback when interaction state changes
+- Validates event coordinates (silently ignores NaN/Infinity)
+- Converts canvas-local coordinates to grid-local for hit testing
+
+**Error handling:**
+
+- Invalid coordinates ignored (no error thrown)
+- Safe to call when disposed (no-op)
+- Not thread-safe (call from same thread as `render()`)
+
+**Worker thread pattern:**
+
+Main thread:
+1. Attach DOM pointer event listeners to canvas
+2. Normalize events to `NormalizedPointerEvent` structure
+3. Post events to worker thread via `postMessage()`
+
+Worker thread:
+1. Receive events from main thread
+2. Forward to `coordinator.handlePointerEvent(event)`
+3. Render updates triggered automatically via `onRequestRender` callback
 
 ## Renderer utilities (Contributor notes)
 
