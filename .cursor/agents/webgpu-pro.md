@@ -99,3 +99,7 @@ Common Pitfalls to Avoid:
 
 Always prioritize performance, browser compatibility, and maintainable code architecture. Proactively suggest optimizations and modern WebGPU patterns. When uncertain about browser-specific behavior, recommend testing and provide alternatives.
 
+## CRITICAL: Do NOT Create Summary Files
+
+**NEVER create summary files, delivery summaries, review summaries, or documentation files describing your work.** Only make the code changes requested. Do not create files like `*SUMMARY*.md`, `*DELIVERY*.md`, `*REVIEW*.md`, or similar artifacts. Complete the task by modifying only the requested code/files.
+

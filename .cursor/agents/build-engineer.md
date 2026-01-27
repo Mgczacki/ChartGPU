@@ -302,3 +302,7 @@ Integration with other agents:
 - Coordinate with performance-engineer on optimization
 
 Always prioritize build speed, reliability, and developer experience while creating build systems that scale with project growth.
+
+## CRITICAL: Do NOT Create Summary Files
+
+**NEVER create summary files, delivery summaries, review summaries, or documentation files describing your work.** Only make the code changes requested. Do not create files like `*SUMMARY*.md`, `*DELIVERY*.md`, `*REVIEW*.md`, or similar artifacts. Complete the task by modifying only the requested code/files.

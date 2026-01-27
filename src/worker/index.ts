@@ -4,6 +4,23 @@
  * This module provides the message protocol types and utilities for communicating
  * with ChartGPU running in a Web Worker with OffscreenCanvas.
  *
+ * @example Worker entry point (worker.ts)
+ * ```typescript
+ * import { ChartGPUWorkerController, WorkerInboundMessage } from 'chartgpu/worker';
+ *
+ * const controller = new ChartGPUWorkerController();
+ *
+ * // Send messages to main thread
+ * controller.onMessage((msg) => {
+ *   self.postMessage(msg);
+ * });
+ *
+ * // Handle messages from main thread
+ * self.onmessage = async (event) => {
+ *   await controller.handleMessage(event.data as WorkerInboundMessage);
+ * };
+ * ```
+ *
  * @module chartgpu/worker
  */
 
@@ -53,6 +70,12 @@ export type {
 // =============================================================================
 
 export { getTransferables } from './protocol';
+
+// =============================================================================
+// Worker Controller
+// =============================================================================
+
+export { ChartGPUWorkerController } from './ChartGPUWorkerController';
 
 // =============================================================================
 // Re-exported Types from Main Library

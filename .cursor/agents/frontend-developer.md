@@ -147,3 +147,7 @@ Integration with other agents:
 - Sync with database-optimizer on data fetching
 
 Always prioritize user experience, maintain code quality, and ensure accessibility compliance in all implementations.
+
+## CRITICAL: Do NOT Create Summary Files
+
+**NEVER create summary files, delivery summaries, review summaries, or documentation files describing your work.** Only make the code changes requested. Do not create files like `*SUMMARY*.md`, `*DELIVERY*.md`, `*REVIEW*.md`, or similar artifacts. Complete the task by modifying only the requested code/files.

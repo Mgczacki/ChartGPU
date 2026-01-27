@@ -48,6 +48,7 @@ alwaysApply: true
    - Relevant files or code sections
    - Any constraints or requirements
    - Expected outcomes
+   - **CRITICAL**: Explicitly state "Do NOT create summary files, delivery summaries, or review summaries. Only modify the code/files requested."
 4. **On build approval, provide a confirmation message** that lists:
    - Each subagent delegated for the task(s)
    - What each subagent's assigned task is
@@ -57,6 +58,20 @@ alwaysApply: true
      - code-reviewer: Review GPUContext.ts for code quality, security, and best practices
      - webgpu-pro: Optimize WebGPU render pipeline for performance
      ```
+
+### Subagent Behavior Rules
+
+**CRITICAL - Subagents MUST NOT:**
+- Create summary files (e.g., `*SUMMARY*.md`, `*DELIVERY*.md`, `*REVIEW*.md`)
+- Create delivery summaries or completion reports
+- Leave documentation files describing what they did
+- Create architecture or design documents unless explicitly requested
+
+**Subagents SHOULD:**
+- Make only the code changes requested
+- Update existing documentation if relevant to the changes
+- Provide brief inline comments explaining complex changes
+- Complete the task without leaving summary artifacts
 
 ### Multiple Subagents
 

@@ -291,3 +291,7 @@ Integration with other agents:
 - Coordinate with stakeholders on requirements
 
 Always prioritize business value, data accuracy, and clear communication while delivering insights that drive informed decision-making.
+
+## CRITICAL: Do NOT Create Summary Files
+
+**NEVER create summary files, delivery summaries, review summaries, or documentation files describing your work.** Only make the code changes requested. Do not create files like `*SUMMARY*.md`, `*DELIVERY*.md`, `*REVIEW*.md`, or similar artifacts. Complete the task by modifying only the requested code/files.

@@ -14,6 +14,7 @@ This is a guide for AI assistants working with ChartGPU. Use this document to qu
 ### Types and Interfaces
 - **PointerEventData**: Pre-computed pointer event data for worker thread communication - [src/config/types.ts](../../src/config/types.ts)
 - **TooltipData, LegendItem, AxisLabel**: DOM overlay data types - [src/config/types.ts](../../src/config/types.ts)
+- **WorkerInboundMessage, WorkerOutboundMessage**: Worker protocol message types - [worker.md](worker.md#protocol-types)
 
 ### Configuration
 - **Options overview**: [options.md](options.md#chartgpuoptions)
@@ -37,13 +38,14 @@ This is a guide for AI assistants working with ChartGPU. Use this document to qu
 - **GPU context** (functional API): [gpu-context.md](gpu-context.md#functional-api-preferred)
 - **GPU context** (class API): [gpu-context.md](gpu-context.md#class-based-api-backward-compatibility)
 - **Render scheduler**: [render-scheduler.md](render-scheduler.md)
-- **Worker thread support** (DOM overlay separation): [INTERNALS.md](INTERNALS.md#worker-thread-support--dom-overlay-separation)
+- **Worker thread rendering**: [worker.md](worker.md) (ChartGPUWorkerController, utilities)
 - **Worker communication protocol**: [worker-protocol.md](worker-protocol.md)
+- **Worker thread support** (DOM overlay separation): [INTERNALS.md](INTERNALS.md#worker-thread-support--dom-overlay-separation)
 
 ### Interaction
 - **Event handling** (click, hover, crosshair): [interaction.md](interaction.md#event-handling)
 - **Zoom and pan APIs**: [interaction.md](interaction.md#zoom-and-pan-apis)
-- **Worker thread callbacks** (`onClickData`, `onHoverChange`, `onCrosshairMove`): [src/core/createRenderCoordinator.ts](../../src/core/createRenderCoordinator.ts)
+- **Worker thread callbacks** (`onClickData`, `onHoverChange`, `onCrosshairMove`): [render-coordinator-summary.md](render-coordinator-summary.md#rendercoordinatorcallbacks)
 
 ### Animation
 - **Animation controller**: [animation.md](animation.md#animation-controller-internal)
@@ -51,6 +53,7 @@ This is a guide for AI assistants working with ChartGPU. Use this document to qu
 
 ### Internal/Contributors
 - **Internal modules** (data store, renderers, coordinator): [INTERNALS.md](INTERNALS.md)
+- **Worker thread architecture** (why workers, message flow, render scheduling): [Worker Architecture](../internal/WORKER_ARCHITECTURE.md)
 - **Worker thread support** (DOM overlay separation): [INTERNALS.md](INTERNALS.md#worker-thread-support--dom-overlay-separation)
 - **GPU buffer streaming**: [INTERNALS.md](INTERNALS.md#gpu-buffer-streaming-internal--contributor-notes)
 - **CPU downsampling (LTTB)**: [INTERNALS.md](INTERNALS.md#cpu-downsampling-internal--contributor-notes)
@@ -75,6 +78,7 @@ This is a guide for AI assistants working with ChartGPU. Use this document to qu
 | [render-scheduler.md](render-scheduler.md) | Render scheduler (render-on-demand) |
 | [interaction.md](interaction.md) | Event handling, zoom, and pan APIs |
 | [animation.md](animation.md) | Animation controller |
+| [worker.md](worker.md) | Worker API (ChartGPUWorkerController, utilities) |
 | [worker-protocol.md](worker-protocol.md) | Worker communication protocol (messages, types, patterns) |
 | [INTERNALS.md](INTERNALS.md) | Internal modules (contributors) |
 | [troubleshooting.md](troubleshooting.md) | Error handling and best practices |
@@ -101,11 +105,12 @@ This is a guide for AI assistants working with ChartGPU. Use this document to qu
 2. Set up render loop in [render-scheduler.md](render-scheduler.md)
 
 ### Enabling Worker Thread Support
-1. Review message protocol in [worker-protocol.md](worker-protocol.md)
-2. Configure `domOverlays: false` in [INTERNALS.md](INTERNALS.md#rendercoordinatorcallbacks)
-3. Implement worker thread callbacks (`onClickData`, `onTooltipUpdate`, etc.) in [INTERNALS.md](INTERNALS.md#worker-thread-support--dom-overlay-separation)
-4. Forward pointer events via [handlePointerEvent()](INTERNALS.md#rendercoordinatorhandlepointerevent) using `PointerEventData` - [src/config/types.ts](../../src/config/types.ts)
-5. See complete implementation guide in [Worker Thread Integration](../internal/WORKER_THREAD_INTEGRATION.md)
+1. **Understand architecture**: [Worker Architecture](../internal/WORKER_ARCHITECTURE.md) - Why workers, message flow, render scheduling
+2. **Set up worker controller**: [worker.md](worker.md#quick-start) - ChartGPUWorkerController setup
+3. **Review message protocol**: [worker-protocol.md](worker-protocol.md) - All message types and flow
+4. **Forward pointer events**: [handlePointerEvent()](INTERNALS.md#rendercoordinatorhandlepointerevent) using `PointerEventData` - [src/config/types.ts](../../src/config/types.ts)
+5. **Implement DOM overlay rendering**: Handle `tooltipUpdate`, `legendUpdate`, `axisLabelsUpdate` messages
+6. **Complete integration guide**: [Worker Thread Integration](../internal/WORKER_THREAD_INTEGRATION.md)
 
 ## Architecture Overview
 

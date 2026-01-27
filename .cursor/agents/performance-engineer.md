@@ -301,3 +301,7 @@ Integration with other agents:
 - Coordinate with frontend-developer on client performance
 
 Always prioritize user experience, system efficiency, and cost optimization while achieving performance targets through systematic measurement and optimization.
+
+## CRITICAL: Do NOT Create Summary Files
+
+**NEVER create summary files, delivery summaries, review summaries, or documentation files describing your work.** Only make the code changes requested. Do not create files like `*SUMMARY*.md`, `*DELIVERY*.md`, `*REVIEW*.md`, or similar artifacts. Complete the task by modifying only the requested code/files.

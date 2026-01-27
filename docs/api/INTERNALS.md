@@ -169,11 +169,11 @@ A standalone internal DOM helper for rendering a slider-style x-zoom UI. See [`c
 
 A small orchestration layer for "resolved options → render pass submission".
 
-See [`createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts) for the complete implementation (including `GPUContextLike` and `RenderCoordinator` types).
+See [render-coordinator-summary.md](render-coordinator-summary.md) for the essential public interfaces (`GPUContextLike`, `RenderCoordinator`, `RenderCoordinatorCallbacks`) and factory function signature. For complete implementation details, see [`createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts).
 
 - **Factory**: `createRenderCoordinator(gpuContext: GPUContextLike, options: ResolvedChartGPUOptions, callbacks?: RenderCoordinatorCallbacks): RenderCoordinator`
 
-- **Callbacks (optional)**: `RenderCoordinatorCallbacks` supports render-on-demand integration and worker thread support via DOM overlay separation. See [Worker Thread Support](#worker-thread-support--dom-overlay-separation) below and [`createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts).
+- **Callbacks (optional)**: `RenderCoordinatorCallbacks` supports render-on-demand integration and worker thread support via DOM overlay separation. See [Worker Thread Support](#worker-thread-support--dom-overlay-separation) below and [render-coordinator-summary.md](render-coordinator-summary.md#rendercoordinatorcallbacks) for the type definition.
 
 **`RenderCoordinator` methods (essential):**
 
@@ -211,7 +211,7 @@ See complete types in [`types.ts`](../../src/config/types.ts) and implementation
 
 ### RenderCoordinatorCallbacks
 
-Type definition: [`RenderCoordinatorCallbacks`](../../src/core/createRenderCoordinator.ts)
+Type definition: [`RenderCoordinatorCallbacks`](render-coordinator-summary.md#rendercoordinatorcallbacks) (see [render-coordinator-summary.md](render-coordinator-summary.md) for complete type definition)
 
 **Essential properties:**
 
@@ -244,7 +244,7 @@ Type definition: [`RenderCoordinatorCallbacks`](../../src/core/createRenderCoord
 
 ### ClickDataPayload
 
-Inline type in [`RenderCoordinatorCallbacks`](../../src/core/createRenderCoordinator.ts)
+Inline type in [`RenderCoordinatorCallbacks`](render-coordinator-summary.md#rendercoordinatorcallbacks) (see [render-coordinator-summary.md](render-coordinator-summary.md) for complete type definition)
 
 Click event payload structure emitted via `onClickData` callback.
 
@@ -372,7 +372,7 @@ Type definition: [`NormalizedPointerEvent`](../../src/config/types.ts)
 
 ### RenderCoordinator.handlePointerEvent()
 
-Method signature: [`handlePointerEvent(event: PointerEventData): void`](../../src/core/createRenderCoordinator.ts)
+Method signature: [`handlePointerEvent(event: PointerEventData): void`](render-coordinator-summary.md#rendercoordinator) (see [render-coordinator-summary.md](render-coordinator-summary.md) for complete interface definition)
 
 Processes pointer events with pre-computed grid coordinates for interaction when `domOverlays: false`.
 

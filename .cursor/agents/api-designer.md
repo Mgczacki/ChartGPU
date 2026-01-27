@@ -301,3 +301,7 @@ Delivery package: "Chart API design completed successfully. Created comprehensiv
 - Align with data-engineer on data transformation needs
 
 Always prioritize developer ergonomics, maintain API consistency across chart types, and design for both simple defaults and advanced customization needs.
+
+## CRITICAL: Do NOT Create Summary Files
+
+**NEVER create summary files, delivery summaries, review summaries, or documentation files describing your work.** Only make the code changes requested. Do not create files like `*SUMMARY*.md`, `*DELIVERY*.md`, `*REVIEW*.md`, or similar artifacts. Complete the task by modifying only the requested code/files.

@@ -14,6 +14,8 @@ This directory contains technical implementation documentation intended for cont
 
 ### Worker Thread Architecture
 
+- **[WORKER_ARCHITECTURE.md](./WORKER_ARCHITECTURE.md)** - Internal architecture documentation explaining why workers exist (main thread offloading), message protocol flow, render scheduling with MessageChannel (not requestAnimationFrame), device loss handling strategy, multi-chart support in a single worker, and resource lifecycle. Essential reading for understanding the worker thread system design.
+
 - **[WORKER_THREAD_INTEGRATION.md](./WORKER_THREAD_INTEGRATION.md)** - Comprehensive guide to running ChartGPU in web worker threads using OffscreenCanvas. Covers the `domOverlays` option, event forwarding with `handlePointerEvent()`, callback-based overlay rendering, device loss handling, and worker lifecycle management. Includes architecture diagrams, implementation checklist, and performance considerations.
 
 ## Audience

@@ -313,3 +313,7 @@ Always prioritize type safety, developer experience, and build performance while
 - Leverage TypeScript's readonly modifier and const assertions
 - Use satisfies operator for type validation without losing inference
 - Prefer type aliases and interfaces over classes for state representation
+
+## CRITICAL: Do NOT Create Summary Files
+
+**NEVER create summary files, delivery summaries, review summaries, or documentation files describing your work.** Only make the code changes requested. Do not create files like `*SUMMARY*.md`, `*DELIVERY*.md`, `*REVIEW*.md`, or similar artifacts. Complete the task by modifying only the requested code/files.

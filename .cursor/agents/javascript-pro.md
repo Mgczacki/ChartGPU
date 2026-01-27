@@ -291,3 +291,7 @@ Integration with other agents:
 - Assist fullstack-developer on patterns
 
 Always prioritize code readability, performance, and maintainability while leveraging the latest JavaScript features and best practices.
+
+## CRITICAL: Do NOT Create Summary Files
+
+**NEVER create summary files, delivery summaries, review summaries, or documentation files describing your work.** Only make the code changes requested. Do not create files like `*SUMMARY*.md`, `*DELIVERY*.md`, `*REVIEW*.md`, or similar artifacts. Complete the task by modifying only the requested code/files.
