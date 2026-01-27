@@ -56,6 +56,10 @@ sequenceDiagram
     Main->>Worker: setZoomRange (start, end)
     Main->>Worker: setInteractionX (x)
     Main->>Worker: setAnimation (config)
+    Main->>Worker: setGPUTiming (enabled)
+    
+    Note over Main,Worker: Performance Monitoring
+    Worker-->>Main: performanceUpdate (metrics, every frame)
     
     Note over Main,Worker: Lifecycle
     Worker-->>Main: deviceLost (reason)
@@ -228,6 +232,22 @@ Enable or disable animation, optionally updating animation configuration.
 
 **Source:** See [`AnimationConfig`](../../src/config/types.ts)
 
+### `setGPUTiming`
+
+Enable or disable GPU timing measurement (requires `timestamp-query` WebGPU feature).
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `'setGPUTiming'` | ✓ | Message type identifier |
+| `chartId` | `string` | ✓ | Chart instance identifier |
+| `enabled` | `boolean` | ✓ | Whether GPU timing is enabled |
+
+**When to use:** Enable GPU timing for detailed CPU vs GPU performance profiling.
+
+**Note:** GPU timing requires the `timestamp-query` WebGPU feature. Check `PerformanceCapabilities.gpuTimingSupported` before enabling.
+
+**Source:** See [`protocol.ts`](../../src/worker/protocol.ts)
+
 ### `dispose`
 
 Dispose worker resources and prepare for termination.
@@ -253,8 +273,11 @@ Initialization complete, worker ready to receive messages.
 | `chartId` | `string` | Chart instance identifier |
 | `messageId` | `string` | Matches `messageId` from `init` request |
 | `capabilities` | `{ adapter: string, features: string[] }` | Optional GPU capabilities info for diagnostics |
+| `performanceCapabilities` | `PerformanceCapabilities` | Optional performance capabilities (GPU timing support, timer support, etc.) |
 
 **When emitted:** After successful initialization in response to `init` message.
+
+**Note:** The `performanceCapabilities` field was added to communicate which performance features are available in the worker environment.
 
 ### `rendered`
 
@@ -369,6 +392,27 @@ Zoom range changed (inside zoom interaction or programmatic).
 | `end` | `number` | Normalized end position [0, 1] |
 
 **When emitted:** Wheel zoom, drag pan, `setZoomRange()` calls.
+
+### `performanceUpdate`
+
+Performance metrics update (streamed on every render frame).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | `'performanceUpdate'` | Message type identifier |
+| `chartId` | `string` | Chart instance identifier |
+| `metrics` | `PerformanceMetrics` | Current performance metrics snapshot |
+
+**When emitted:** After each frame render (up to 60fps).
+
+**Purpose:** Enables real-time performance monitoring for worker-based charts. The proxy caches these metrics and forwards them to subscribers registered via `onPerformanceUpdate()`.
+
+**Performance notes:**
+- Updates are sent on every frame to enable real-time dashboards
+- Main thread proxy caches latest metrics to avoid message round-trips
+- Consider throttling display updates in UI to avoid DOM jank
+
+**Source:** See [`PerformanceMetrics`](options.md#performancemetrics) for type details.
 
 ### `deviceLost`
 

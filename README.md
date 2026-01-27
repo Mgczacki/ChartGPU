@@ -136,8 +136,9 @@ flowchart TB
     end
 
     subgraph WorkerOutbound["Worker → Main (postMessage)"]
-      WGPUInit -->|"ready"| ReadyMsg["ReadyMessage + GPU capabilities"]
+      WGPUInit -->|"ready"| ReadyMsg["ReadyMessage + GPU capabilities + PerformanceCapabilities"]
       WRenderLoop -->|"rendered"| RenderedMsg["RenderedMessage (frame stats)"]
+      WRenderLoop -->|"performanceUpdate"| PerfMsg["PerformanceUpdateMessage (FPS, frame time, memory)"]
       WHitTest -->|"tooltipUpdate"| TooltipMsg["TooltipUpdateMessage"]
       WCoordinator -->|"legendUpdate"| LegendMsg["LegendUpdateMessage"]
       WCoordinator -->|"axisLabelsUpdate"| AxisMsg["AxisLabelsUpdateMessage"]
@@ -152,6 +153,8 @@ flowchart TB
 
     subgraph MainThreadDOM["Main Thread: DOM Overlay Rendering (ChartGPUWorkerProxy)"]
       ReadyMsg --> ProxyOverlays
+      ReadyMsg --> PerfCache["Cache PerformanceCapabilities + set isInitialized"]
+      PerfMsg --> PerfUpdate["Cache PerformanceMetrics + notify callbacks"]
       TooltipMsg --> DOMTooltip["RAF-batched tooltip.show(x, y, content)"]
       LegendMsg --> DOMLegend["RAF-batched legend.update(items, theme)"]
       AxisMsg --> DOMAxis["RAF-batched textOverlay.addLabel(...)"]

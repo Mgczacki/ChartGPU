@@ -54,6 +54,10 @@ This document explains how to use the ChartGPU render coordinator in a web worke
 └─────────────────────────────────┘           └──────────────────────────────┘
 ```
 
+## Overview Updates
+
+**Note**: This document is designed for contributors implementing custom worker-based architectures. For most users, the built-in `ChartGPU.createInWorker()` API (documented in [`WORKER_ARCHITECTURE.md`](./WORKER_ARCHITECTURE.md)) handles all worker thread details automatically, including initialization race condition prevention and performance metrics tracking.
+
 ## Configuration
 
 ### `domOverlays` Option
@@ -355,9 +359,11 @@ onDeviceLost: (reason) => {
 - [ ] Transfer canvas to worker with `postMessage(canvas, [canvas])`
 - [ ] Initialize GPUContext with OffscreenCanvas in worker
 - [ ] Create render coordinator with `domOverlays: false`
+- [ ] Initialize performance tracking state (frame timestamps, counters)
 - [ ] Implement all required callbacks (tooltip, legend, axis labels)
 - [ ] Set up message handler for pointer events
 - [ ] Set up message handler for data updates
+- [ ] Send ReadyMessage with performance capabilities after initialization
 - [ ] Implement device loss recovery strategy
 
 ### Main Thread Setup
@@ -366,9 +372,13 @@ onDeviceLost: (reason) => {
 - [ ] Transfer control to offscreen canvas
 - [ ] Attach pointer event listeners to original canvas element
 - [ ] Normalize event coordinates to canvas-local CSS pixels
-- [ ] Post normalized events to worker
+- [ ] **CRITICAL:** Implement `isInitialized` flag to prevent premature event forwarding
+- [ ] Post normalized events to worker **ONLY if isInitialized === true**
 - [ ] Create DOM elements for tooltip, legend, and axis labels
 - [ ] Implement callback message handlers
+- [ ] Wait for ReadyMessage and set `isInitialized = true` on receipt
+- [ ] Cache performance capabilities from ReadyMessage
+- [ ] Implement performance update handler for streaming metrics
 - [ ] Handle device loss notifications
 
 ### Testing
@@ -381,6 +391,60 @@ onDeviceLost: (reason) => {
 - [ ] Test worker termination and cleanup
 - [ ] Test high-frequency data updates
 - [ ] Profile performance vs main thread rendering
+
+## Race Condition Prevention
+
+### Initialization Race Condition
+
+**Issue**: Events forwarded to worker before initialization completes cause errors.
+
+**Problem scenario:**
+1. Main thread creates OffscreenCanvas and sends InitMessage
+2. User interaction triggers pointer event before worker responds
+3. Main thread forwards event to worker
+4. Worker receives event before ReadyMessage sent
+5. Worker attempts to process event with uninitialized coordinator → crash
+
+**Solution**: `isInitialized` flag pattern
+
+**Implementation:**
+```typescript
+// Main thread proxy
+class ChartGPUWorkerProxy {
+  private isInitialized = false;
+  
+  async init() {
+    // Send InitMessage
+    worker.postMessage({ type: 'init', canvas, ... }, [canvas]);
+    
+    // Wait for ReadyMessage
+    await this.waitForReady();
+    
+    // CRITICAL: Set flag only after worker is ready
+    this.isInitialized = true;
+  }
+  
+  private handlePointerEvent(event: PointerEvent) {
+    // Guard against premature forwarding
+    if (!this.isInitialized) {
+      return; // Silently drop event
+    }
+    
+    // Safe to forward - worker is ready
+    this.forwardEventToWorker(event);
+  }
+}
+```
+
+**Why silent drop instead of error:**
+- User interactions during initialization are common (e.g., hover while loading)
+- Events during initialization are not critical (worker will be ready soon)
+- Silent drop prevents console noise and doesn't block rendering
+- Once `isInitialized = true`, all events are processed normally
+
+**Built-in support:** [`ChartGPUWorkerProxy`](../../src/worker/ChartGPUWorkerProxy.ts) implements this pattern automatically. Custom implementations must implement similar protection.
+
+**Source:** See [`ChartGPUWorkerProxy.init()`](../../src/worker/ChartGPUWorkerProxy.ts) and event forwarding methods
 
 ## Edge Cases and Safety
 

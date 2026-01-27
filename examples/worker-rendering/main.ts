@@ -195,6 +195,71 @@ function formatDuration(ms: number): string {
   return `${minutes}m ${seconds}s`;
 }
 
+function formatAbbreviatedNumber(n: number): string {
+  if (n < 1000) return n.toString();
+  if (n < 1_000_000) return `${(n / 1_000).toFixed(1)}K`;
+  if (n < 1_000_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  return `${(n / 1_000_000_000).toFixed(2)}B`;
+}
+
+// ============================================================================
+// Total Points Display
+// ============================================================================
+
+let lastDisplayUpdate = 0;
+const DISPLAY_UPDATE_THROTTLE_MS = 100; // Update display max once per 100ms
+
+/**
+ * Updates the total points display to show actual rendered points or calculated from inputs.
+ * 
+ * Behavior:
+ * - When actualCount is provided: Shows the live/actual count from state.totalPointsGenerated
+ * - When actualCount is undefined: Calculates from input fields (pointCount × seriesCount)
+ * - Throttles updates to max 10Hz (100ms) to prevent DOM jank during streaming
+ * 
+ * @param actualCount Optional actual count from state. If not provided, calculates from inputs.
+ */
+function updateTotalPointsDisplay(actualCount?: number): void {
+  // Throttle updates to prevent jank during high-frequency streaming
+  const now = performance.now();
+  if (actualCount !== undefined && now - lastDisplayUpdate < DISPLAY_UPDATE_THROTTLE_MS) {
+    return;
+  }
+  lastDisplayUpdate = now;
+
+  const totalPoints = actualCount !== undefined 
+    ? actualCount 
+    : (parseInt((document.getElementById('pointCount') as HTMLInputElement).value) || 0) *
+      (parseInt((document.getElementById('seriesCount') as HTMLInputElement).value) || 0);
+
+  const valueEl = document.getElementById('totalPointsValue');
+  const hintEl = document.getElementById('totalPointsHint');
+  
+  if (!valueEl || !hintEl) return;
+
+  // Format the full number with commas
+  const formattedNumber = formatNumber(totalPoints);
+  
+  // Format the abbreviated version
+  const abbreviatedNumber = formatAbbreviatedNumber(totalPoints);
+  
+  // Update display
+  valueEl.textContent = formattedNumber;
+  hintEl.textContent = `${abbreviatedNumber} points`;
+
+  // Warning thresholds
+  if (totalPoints > 1_000_000_000) {
+    // Extreme: > 1B points
+    valueEl.setAttribute('data-warning', 'extreme');
+  } else if (totalPoints > 100_000_000) {
+    // High: > 100M points
+    valueEl.setAttribute('data-warning', 'true');
+  } else {
+    // Normal
+    valueEl.setAttribute('data-warning', 'false');
+  }
+}
+
 // ============================================================================
 // Data Generation
 // ============================================================================
@@ -531,6 +596,9 @@ async function handleGenerate(): Promise<void> {
 
     showStatus(`Chart ready! Rendering with ${renderMode} thread.`, 'success');
     state.totalPointsGenerated = pointCount;
+    
+    // Update display to show actual generated count
+    updateTotalPointsDisplay(state.totalPointsGenerated);
   } catch (error) {
     console.error('Generation failed:', error);
     showStatus(
@@ -585,6 +653,10 @@ async function handleStartStreaming(): Promise<void> {
     }
 
     state.totalPointsGenerated += streamRate;
+    
+    // Update live point count display (throttled)
+    updateTotalPointsDisplay(state.totalPointsGenerated);
+    
     showStatus(
       `Streaming... ${frameCount}/${streamDuration} frames (${formatNumber(state.totalPointsGenerated)} points total)`,
       'warning'
@@ -602,6 +674,11 @@ function stopStreaming(): void {
     clearInterval(state.streamingIntervalId);
     state.streamingIntervalId = null;
   }
+  
+  // Update display with final count when streaming stops
+  if (state.totalPointsGenerated > 0) {
+    updateTotalPointsDisplay(state.totalPointsGenerated);
+  }
 }
 
 function handleClear(): void {
@@ -609,6 +686,10 @@ function handleClear(): void {
   disposeChart();
   clearMetricsDisplay();
   state.totalPointsGenerated = 0;
+  
+  // Reset display to show input-based calculation
+  updateTotalPointsDisplay();
+  
   showStatus('Cleared', 'success');
 }
 
@@ -617,6 +698,10 @@ function handleEmergencyStop(): void {
   disposeChart();
   clearMetricsDisplay();
   state.totalPointsGenerated = 0;
+  
+  // Reset display to show input-based calculation
+  updateTotalPointsDisplay();
+  
   showStatus('🚨 Emergency stop activated', 'error');
   showWarningToast('Emergency stop: All operations terminated', 3000);
 }
@@ -647,12 +732,19 @@ function enableAllButtons(): void {
 
 function init(): void {
   initializeMetricsDisplay();
+  
+  // Initialize total points display
+  updateTotalPointsDisplay();
 
   // Button event listeners
   document.getElementById('btnGenerate')?.addEventListener('click', handleGenerate);
   document.getElementById('btnStream')?.addEventListener('click', handleStartStreaming);
   document.getElementById('btnClear')?.addEventListener('click', handleClear);
   document.getElementById('btnEmergency')?.addEventListener('click', handleEmergencyStop);
+
+  // Update total points display when inputs change
+  document.getElementById('pointCount')?.addEventListener('input', () => updateTotalPointsDisplay());
+  document.getElementById('seriesCount')?.addEventListener('input', () => updateTotalPointsDisplay());
 
   // Resize handling
   let resizeScheduled = false;

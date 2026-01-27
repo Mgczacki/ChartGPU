@@ -370,11 +370,164 @@ Then open `http://localhost:5176/examples/` in your browser.
 ### Advanced topics
 
 - **Worker-based rendering**: Use `ChartGPU.createInWorker()` for maximum performance with large datasets (keeps main thread responsive) - see [Worker API](./api/worker.md)
+- **Performance monitoring**: Track FPS, frame time, memory usage, and frame drops in real-time - see [Performance Monitoring](#performance-monitoring) below
 - **Themes**: Use built-in themes (`theme: 'dark' | 'light'`) or create custom themes
 - **Streaming data**: Use `chart.appendData(seriesIndex, newPoints)` for real-time updates
 - **Zoom & pan**: Enable interactive zoom with `dataZoom: [{ type: 'inside' }]`
 - **Multiple series types**: Mix line, area, bar, scatter, and pie in one chart
 - **Animation**: Customize transitions with `animation: { duration, easing, delay }`
+
+## Performance Monitoring
+
+ChartGPU provides a comprehensive performance metrics API for monitoring rendering performance in real-time. This is useful for debugging performance issues, profiling different configurations, and building performance dashboards.
+
+### Basic Usage
+
+Subscribe to performance updates to receive metrics on every render frame:
+
+```ts
+import { ChartGPU } from 'chartgpu';
+
+const chart = await ChartGPU.create(container, {
+  series: [{ type: 'line', data: myData }]
+});
+
+// Subscribe to performance updates (fires every frame, up to 60fps)
+const unsubscribe = chart.onPerformanceUpdate((metrics) => {
+  console.log('FPS:', metrics.fps);
+  console.log('Frame time (avg):', metrics.frameTimeStats.avg, 'ms');
+  console.log('Memory (used):', metrics.memory.used, 'bytes');
+  console.log('Frame drops:', metrics.frameDrops.totalDrops);
+});
+
+// Later: unsubscribe when done
+unsubscribe();
+```
+
+### Checking Capabilities
+
+Before relying on specific metrics, check which features are supported:
+
+```ts
+const capabilities = chart.getPerformanceCapabilities();
+
+if (capabilities?.gpuTimingSupported) {
+  console.log('GPU timing is available');
+  // Enable GPU timing to get CPU vs GPU time breakdown
+}
+
+if (capabilities?.highResTimerSupported) {
+  console.log('High-resolution timer available');
+}
+```
+
+### Getting a Single Snapshot
+
+For one-time measurements, use `getPerformanceMetrics()`:
+
+```ts
+const metrics = chart.getPerformanceMetrics();
+
+if (metrics) {
+  console.log('Current FPS:', metrics.fps);
+  console.log('Total frames rendered:', metrics.totalFrames);
+  console.log('Time elapsed:', metrics.elapsedTime, 'ms');
+}
+```
+
+### Performance Metrics
+
+The `PerformanceMetrics` object includes:
+
+- **`fps`**: Exact frames per second calculated from actual frame time deltas
+- **`frameTimeStats`**: Min, max, average, and percentile (p50, p95, p99) frame times
+- **`memory`**: Current, peak, and total allocated GPU buffer memory
+- **`frameDrops`**: Total dropped frames and consecutive drop streak
+- **`gpuTiming`**: CPU vs GPU render time (when supported)
+- **`totalFrames`**: Total frames rendered since initialization
+- **`elapsedTime`**: Total time elapsed since initialization
+
+### Building a Performance Dashboard
+
+Here's a complete example of building a real-time performance dashboard:
+
+```ts
+import { ChartGPU } from 'chartgpu';
+import type { PerformanceMetrics } from 'chartgpu';
+
+// Create dashboard elements
+const fpsDisplay = document.getElementById('fps');
+const frameTimeDisplay = document.getElementById('frameTime');
+const memoryDisplay = document.getElementById('memory');
+const dropsDisplay = document.getElementById('drops');
+
+// Create chart
+const chart = await ChartGPU.create(container, {
+  series: [{ type: 'line', data: largeDataset }]
+});
+
+// Subscribe to updates
+chart.onPerformanceUpdate((metrics: PerformanceMetrics) => {
+  // Update FPS display
+  if (fpsDisplay) {
+    fpsDisplay.textContent = metrics.fps.toFixed(1);
+    
+    // Color-code based on FPS
+    if (metrics.fps >= 55) {
+      fpsDisplay.style.color = 'green';
+    } else if (metrics.fps >= 30) {
+      fpsDisplay.style.color = 'orange';
+    } else {
+      fpsDisplay.style.color = 'red';
+    }
+  }
+  
+  // Update frame time display
+  if (frameTimeDisplay) {
+    const { min, max, avg, p95, p99 } = metrics.frameTimeStats;
+    frameTimeDisplay.textContent = 
+      `${min.toFixed(1)} / ${avg.toFixed(1)} / ${max.toFixed(1)} / ${p95.toFixed(1)} / ${p99.toFixed(1)} ms`;
+  }
+  
+  // Update memory display
+  if (memoryDisplay) {
+    const usedMB = (metrics.memory.used / (1024 * 1024)).toFixed(1);
+    const peakMB = (metrics.memory.peak / (1024 * 1024)).toFixed(1);
+    memoryDisplay.textContent = `${usedMB} MB / ${peakMB} MB (peak)`;
+  }
+  
+  // Update frame drops display
+  if (dropsDisplay) {
+    dropsDisplay.textContent = 
+      `${metrics.frameDrops.totalDrops} total, ${metrics.frameDrops.consecutiveDrops} consecutive`;
+  }
+});
+```
+
+### Worker Mode Support
+
+Performance monitoring works identically in worker mode:
+
+```ts
+// Create worker-based chart
+const chart = await ChartGPU.createInWorker(container, {
+  series: [{ type: 'line', data: largeDataset }]
+});
+
+// Subscribe to performance updates (metrics forwarded from worker)
+chart.onPerformanceUpdate((metrics) => {
+  console.log('Worker FPS:', metrics.fps);
+});
+```
+
+For a complete working example with a performance dashboard, see [`examples/worker-rendering/main.ts`](../examples/worker-rendering/main.ts).
+
+### API Reference
+
+For detailed type definitions and method signatures, see:
+- [Performance Monitoring](./api/chart.md#performance-monitoring) - Chart instance methods
+- [Performance Metrics Types](./api/options.md#performance-metrics-types) - Type definitions
+- [Worker Performance](./api/worker.md#performance-monitoring-in-worker-mode) - Worker-specific details
 
 ---
 

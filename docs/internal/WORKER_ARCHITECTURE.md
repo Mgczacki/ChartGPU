@@ -9,6 +9,7 @@ ChartGPU's worker thread system offloads GPU rendering to a Web Worker, keeping 
 - Parallel processing of render computations on separate thread
 - Clean separation of WebGPU operations from DOM manipulation
 - Support for multiple chart instances in a single worker
+- Real-time performance monitoring with exact FPS measurement
 
 **Source files:**
 - Factory function: [`src/worker/createChartInWorker.ts`](../../src/worker/createChartInWorker.ts)
@@ -65,12 +66,13 @@ async function createChartInWorker(
 **Purpose:** Implements ChartGPUInstance interface on main thread while delegating rendering to worker.
 
 **Key responsibilities:**
-1. **State caching:** Maintains local copies of options, interactionX, zoomRange for synchronous getters
+1. **State caching:** Maintains local copies of options, interactionX, zoomRange, performance metrics for synchronous getters
 2. **Message correlation:** Tracks request/response pairs with unique message IDs
 3. **Event forwarding:** Captures pointer events and forwards to worker
 4. **DOM overlay management:** Renders tooltip, legend, axis labels, data zoom slider
 5. **Event re-emission:** Receives worker events and emits to registered listeners
-6. **Lifecycle management:** Handles initialization, resize monitoring, and cleanup
+6. **Performance tracking:** Caches and forwards performance metrics from worker, emits performance updates
+7. **Lifecycle management:** Handles initialization, resize monitoring, and cleanup with race condition prevention
 
 **Architecture:**
 
@@ -79,13 +81,18 @@ ChartGPUWorkerProxy
 ├── State Cache (synchronous getters)
 │   ├── cachedOptions: ChartGPUOptions
 │   ├── cachedInteractionX: number | null
-│   └── cachedZoomRange: { start, end } | null
+│   ├── cachedZoomRange: { start, end } | null
+│   ├── cachedPerformanceMetrics: PerformanceMetrics | null
+│   └── cachedPerformanceCapabilities: PerformanceCapabilities | null
 ├── Message Correlation System
 │   ├── pendingRequests: Map<messageId, PendingRequest>
 │   └── messageTimeout: number (30s default)
 ├── Event System
 │   ├── listeners: Map<eventName, Set<callback>>
+│   ├── performanceUpdateCallbacks: Set<callback>
 │   └── boundMessageHandler: (MessageEvent) => void
+├── Initialization State
+│   └── isInitialized: boolean (prevents premature event forwarding)
 ├── DOM Overlays
 │   ├── tooltip: Tooltip | null
 │   ├── legend: Legend | null
@@ -212,6 +219,43 @@ ChartGPUWorkerProxy
 
 **Source:** See [`ChartGPUWorkerProxy.emit()`](../../src/worker/ChartGPUWorkerProxy.ts) and event handler methods
 
+### Performance Metrics Tracking
+
+**Purpose:** Track and expose real-time performance metrics from worker thread rendering.
+
+**Metrics tracked:**
+- **Exact FPS:** Calculated from circular buffer of frame timestamps (120 frames = 2 seconds)
+- **Frame time stats:** Min, max, average, p50, p95, p99 percentiles
+- **CPU/GPU timing:** Submit time vs GPU completion time (optional with timestamp-query feature)
+- **Memory stats:** Used, peak, and allocated GPU buffer memory
+- **Frame drops:** Total drops, consecutive drops, last drop timestamp
+
+**Circular buffer approach:**
+- Fixed-size Float64Array (120 entries) for high-precision timestamps
+- Ring buffer wraps around when full
+- FPS calculated from time delta between oldest and newest timestamps
+- More accurate than simple frame-to-frame delta (immune to single-frame spikes)
+
+**Proxy caching:**
+- Caches latest `PerformanceMetrics` from worker for synchronous `getPerformanceMetrics()` getter
+- Caches `PerformanceCapabilities` from `ReadyMessage` for synchronous `getPerformanceCapabilities()` getter
+- Maintains set of `onPerformanceUpdate()` callbacks for streaming updates
+- Forwards `PerformanceUpdateMessage` from worker to registered callbacks
+
+**Worker protocol:**
+1. Worker tracks frame timestamps in `PerformanceTrackingState` per chart instance
+2. Worker calculates metrics after each render (configurable frequency)
+3. Worker emits `PerformanceUpdateMessage` to main thread
+4. Proxy receives message, updates cache, and notifies callbacks
+
+**GPU timing support:**
+- Optional feature requiring `timestamp-query` WebGPU feature
+- Can be enabled/disabled via `SetGPUTimingMessage`
+- When disabled, `gpuTiming.enabled = false` and times are zero
+- When enabled, tracks CPU submit time vs GPU completion time via `queue.onSubmittedWorkDone()`
+
+**Source:** See [`ChartGPUWorkerProxy` performance methods](../../src/worker/ChartGPUWorkerProxy.ts), [`ChartGPUWorkerController.calculatePerformanceMetrics()`](../../src/worker/ChartGPUWorkerController.ts), and [`PerformanceMetrics` types](../../src/config/types.ts)
+
 ### ResizeObserver and Device Pixel Ratio Monitoring
 
 **Purpose:** Automatically detect container size changes and device pixel ratio changes, forwarding resize messages to worker.
@@ -245,6 +289,8 @@ ChartGPUWorkerProxy
 4. Create DOM overlays (tooltip, legend, text, slider)
 5. Transfer canvas control to OffscreenCanvas
 6. Send InitMessage and wait for ReadyMessage
+7. Set `isInitialized = true` when ReadyMessage received (prevents premature event forwarding)
+8. Cache `performanceCapabilities` from ReadyMessage
 
 **Disposal:**
 1. Set `isDisposed = true` to prevent new operations
@@ -301,7 +347,35 @@ const chart = await createChartInWorker(container, options, worker);
 - Users can switch between main-thread and worker-based rendering without code changes
 - Only difference: asynchronous initialization (`await createChartInWorker()`)
 
-**Source:** See [`src/worker/index.ts`](../../src/worker/index.ts) for public exports
+**Performance API:**
+```typescript
+// Get current performance metrics (synchronous)
+const metrics: PerformanceMetrics | null = chart.getPerformanceMetrics();
+console.log(`FPS: ${metrics.fps}, Frame time: ${metrics.frameTimeStats.avg}ms`);
+
+// Get performance capabilities (synchronous)
+const caps: PerformanceCapabilities | null = chart.getPerformanceCapabilities();
+console.log(`GPU timing supported: ${caps.gpuTimingSupported}`);
+
+// Subscribe to streaming performance updates
+const unsubscribe = chart.onPerformanceUpdate((metrics) => {
+  console.log(`Live FPS: ${metrics.fps}`);
+});
+
+// Cleanup
+unsubscribe();
+```
+
+**Performance metrics include:**
+- **fps**: Exact FPS from circular buffer (120 frames)
+- **frameTimeStats**: Min, max, avg, p50, p95, p99 percentiles (milliseconds)
+- **gpuTiming**: CPU submit time vs GPU completion time (optional)
+- **memory**: Used, peak, allocated GPU buffer bytes
+- **frameDrops**: Total drops, consecutive drops, last drop timestamp
+- **totalFrames**: Total frames rendered since initialization
+- **elapsedTime**: Total time elapsed (milliseconds)
+
+**Source:** See [`src/worker/index.ts`](../../src/worker/index.ts) for public exports, [`src/config/types.ts`](../../src/config/types.ts) for type definitions
 
 ## Why Workers for ChartGPU?
 
@@ -352,9 +426,10 @@ graph TB
         EventListeners["Pointer Event Listeners<br/>(pointerdown/move/up/leave/wheel)"]
         ResizeObs["ResizeObserver + DPR monitoring<br/>(RAF-batched)"]
         DOMOverlays["DOM Overlays<br/>(tooltip, legend, text, slider)"]
-        StateCache["State Cache<br/>(options, interactionX, zoomRange)"]
+        StateCache["State Cache<br/>(options, interactionX, zoomRange,<br/>performanceMetrics, performanceCapabilities)"]
         MessageCorrelation["Message Correlation<br/>(pendingRequests, timeouts)"]
         EventEmitter["Event Emitter<br/>(click, mouseover, mouseout, crosshairMove)"]
+        PerfCallbacks["Performance Update Callbacks<br/>(onPerformanceUpdate subscriptions)"]
         MessageSender["worker.postMessage()<br/>Main → Worker"]
         MessageReceiver["worker.onmessage<br/>Worker → Main"]
     end
@@ -362,11 +437,12 @@ graph TB
     subgraph WorkerThread["Worker Thread"]
         Controller["ChartGPUWorkerController<br/>(singleton)"]
         Charts["Map<chartId, ChartInstance>"]
-        Instance["ChartInstance<br/>- GPUContext<br/>- RenderCoordinator<br/>- MessageChannel<br/>- ChartInstanceState"]
+        Instance["ChartInstance<br/>- GPUContext<br/>- RenderCoordinator<br/>- MessageChannel<br/>- ChartInstanceState<br/>- PerformanceTrackingState"]
         GPU["WebGPU Device<br/>(OffscreenCanvas)"]
         RenderLoop["MessageChannel.port1.onmessage<br/>(render loop)"]
         Coordinator["RenderCoordinator<br/>(domOverlays: false)"]
         HitTest["Hit Testing<br/>(findNearestPoint, findPieSlice, findCandlestick)"]
+        PerfTracker["Performance Tracker<br/>(frame timestamps, FPS calculation)"]
     end
 
     App --> CreateInWorker
@@ -378,6 +454,7 @@ graph TB
     Proxy --> StateCache
     Proxy --> MessageCorrelation
     Proxy --> EventEmitter
+    Proxy --> PerfCallbacks
     Canvas --> OffscreenTransfer
     OffscreenTransfer -->|"OffscreenCanvas (transferred)"| MessageSender
     MessageSender -->|"init message"| Controller
@@ -390,11 +467,14 @@ graph TB
     Coordinator -->|"GPU commands"| GPU
     GPU -->|"rendered frame"| Canvas
     Coordinator --> HitTest
+    RenderLoop --> PerfTracker
+    PerfTracker -->|"performanceUpdate"| MessageReceiver
     HitTest -->|"tooltipUpdate, hoverChange, click"| MessageReceiver
     Coordinator -->|"legendUpdate, axisLabelsUpdate"| MessageReceiver
     MessageReceiver --> Proxy
     Proxy --> DOMOverlays
     Proxy --> EventEmitter
+    Proxy --> PerfCallbacks
     EventListeners -->|"PointerEventData"| MessageSender
     ResizeObs -->|"ResizeMessage"| MessageSender
     MessageSender -->|"forwardPointerEvent, resize, setOption, appendData, etc."| Controller
@@ -418,9 +498,12 @@ graph TB
 11. **Worker thread:** Controller initializes WebGPU context via [`createGPUContext()`](../../src/core/GPUContext.ts)
 12. **Worker thread:** Controller creates [`RenderCoordinator`](../../src/core/createRenderCoordinator.ts) with `domOverlays: false`
 13. **Worker thread:** Controller sets up MessageChannel for render scheduling
-14. **Worker thread:** Controller emits `ReadyMessage` to main thread with matching `messageId`
-15. **Main thread:** Proxy receives `ready` message and resolves `init()` Promise
-16. **Main thread:** Factory function returns initialized proxy to application code
+14. **Worker thread:** Controller initializes performance tracking state (frame timestamps, counters)
+15. **Worker thread:** Controller emits `ReadyMessage` to main thread with matching `messageId` and `performanceCapabilities`
+16. **Main thread:** Proxy receives `ready` message, caches `performanceCapabilities`, sets `isInitialized = true`, and resolves `init()` Promise
+17. **Main thread:** Factory function returns initialized proxy to application code
+
+**Race condition prevention:** The `isInitialized` flag prevents events from being forwarded to the worker before initialization completes. Events received before `ReadyMessage` are silently dropped, preventing worker errors.
 
 **Source:** See [`createChartInWorker()`](../../src/worker/createChartInWorker.ts), [`ChartGPUWorkerProxy.init()`](../../src/worker/ChartGPUWorkerProxy.ts), and [`ChartGPUWorkerController.initChart()`](../../src/worker/ChartGPUWorkerController.ts)
 
@@ -1120,6 +1203,8 @@ The ChartGPU worker thread architecture provides:
 **Core Features:**
 - **Main thread responsiveness:** GPU operations don't block UI
 - **Message-based protocol:** Clean separation of concerns with typed messages
+- **Performance monitoring:** Real-time FPS, frame time, memory, and frame drop tracking
+- **Race condition prevention:** `isInitialized` flag guards against premature event forwarding
 - **Device loss handling:** Detection, state tracking, and error reporting
 - **Resource lifecycle:** Proper initialization, cleanup, and leak prevention
 - **Error handling:** Comprehensive validation and error reporting with error codes
@@ -1130,5 +1215,7 @@ The ChartGPU worker thread architecture provides:
 - **Closure caching:** Eliminate Map lookups in hot paths
 - **Batch operations:** Multi-series data appends in single message
 - **Reduced branching:** Early returns for better CPU pipeline utilization
+- **Circular buffer FPS:** Exact FPS measurement from 120-frame timestamp buffer
+- **Streaming metrics:** Configurable performance update frequency
 
 This architecture enables real-time streaming data visualization with excellent UI responsiveness, transparent API, and robust error handling.

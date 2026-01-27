@@ -10,14 +10,16 @@ For AI assistants and LLM context: **[LLM Entrypoint](api/llm-context.md)**
 
 ## Quick Links
 
-- **[Chart API](api/chart.md)** - Chart creation, instance methods, legend, sync
-- **[Options](api/options.md)** - Series, axes, zoom, tooltip, animation configuration
+- **[Chart API](api/chart.md)** - Chart creation, instance methods, legend, sync, performance monitoring
+- **[Options](api/options.md)** - Series, axes, zoom, tooltip, animation, performance metrics types
 - **[Themes](api/themes.md)** - Theme configuration and presets
 - **[Scales](api/scales.md)** - Linear and category scale utilities
 - **[GPU Context](api/gpu-context.md)** - WebGPU context management (functional + class APIs)
 - **[RenderScheduler](api/render-scheduler.md)** - Render loop management
 - **[Interaction](api/interaction.md)** - Event handling, zoom, and pan APIs
 - **[Animation](api/animation.md)** - Animation controller
+- **[Worker API](api/worker.md)** - Worker-based rendering with performance monitoring
+- **[Worker Protocol](api/worker-protocol.md)** - Worker messages including performance updates
 - **[Internals](api/INTERNALS.md)** - Internal modules (contributors)
 - **[Troubleshooting](api/troubleshooting.md)** - Error handling and best practices
 

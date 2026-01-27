@@ -11,11 +11,13 @@ This is a guide for AI assistants working with ChartGPU. Use this document to qu
 - **Chart events (click, hover, crosshair)**: [interaction.md](interaction.md#event-handling)
 - **Chart sync (multi-chart interaction)**: [chart.md](chart.md#chart-sync-interaction)
 - **Legend**: [chart.md](chart.md#legend-automatic)
+- **Performance monitoring**: [chart.md](chart.md#performance-monitoring) (FPS, frame time, memory, frame drops)
 
 ### Types and Interfaces
 - **PointerEventData**: Pre-computed pointer event data for worker thread communication - [src/config/types.ts](../../src/config/types.ts)
 - **TooltipData, LegendItem, AxisLabel**: DOM overlay data types - [src/config/types.ts](../../src/config/types.ts)
 - **WorkerInboundMessage, WorkerOutboundMessage**: Worker protocol message types - [worker.md](worker.md#protocol-types)
+- **PerformanceMetrics, PerformanceCapabilities**: Performance monitoring types - [options.md](options.md#performance-metrics-types)
 
 ### Configuration
 - **Options overview**: [options.md](options.md#chartgpuoptions)
@@ -80,8 +82,8 @@ This is a guide for AI assistants working with ChartGPU. Use this document to qu
 | [render-scheduler.md](render-scheduler.md) | Render scheduler (render-on-demand) |
 | [interaction.md](interaction.md) | Event handling, zoom, and pan APIs |
 | [animation.md](animation.md) | Animation controller |
-| [worker.md](worker.md) | Worker API (ChartGPUWorkerController, utilities) |
-| [worker-protocol.md](worker-protocol.md) | Worker communication protocol (messages, types, patterns) |
+| [worker.md](worker.md) | Worker API (ChartGPUWorkerController, utilities, performance) |
+| [worker-protocol.md](worker-protocol.md) | Worker communication protocol (messages, types, patterns, performance updates) |
 | [INTERNALS.md](INTERNALS.md) | Internal modules (contributors) |
 | [troubleshooting.md](troubleshooting.md) | Error handling and best practices |
 | [llm-context.md](llm-context.md) | This file (LLM navigation guide) |
@@ -221,8 +223,9 @@ flowchart TB
     end
 
     subgraph WorkerOutbound["Worker → Main (postMessage)"]
-      WGPUInit -->|"ready"| ReadyMsg["ReadyMessage + GPU capabilities"]
+      WGPUInit -->|"ready"| ReadyMsg["ReadyMessage + GPU capabilities + PerformanceCapabilities"]
       WRenderLoop -->|"rendered"| RenderedMsg["RenderedMessage (frame stats)"]
+      WRenderLoop -->|"performanceUpdate"| PerfMsg["PerformanceUpdateMessage (FPS, frame time, memory)"]
       WHitTest -->|"tooltipUpdate"| TooltipMsg["TooltipUpdateMessage"]
       WCoordinator -->|"legendUpdate"| LegendMsg["LegendUpdateMessage"]
       WCoordinator -->|"axisLabelsUpdate"| AxisMsg["AxisLabelsUpdateMessage"]
@@ -237,6 +240,8 @@ flowchart TB
 
     subgraph MainThreadDOM["Main Thread: DOM Overlay Rendering (ChartGPUWorkerProxy)"]
       ReadyMsg --> ProxyOverlays
+      ReadyMsg --> PerfCache["Cache PerformanceCapabilities + set isInitialized"]
+      PerfMsg --> PerfUpdate["Cache PerformanceMetrics + notify callbacks"]
       TooltipMsg --> DOMTooltip["RAF-batched tooltip.show(x, y, content)"]
       LegendMsg --> DOMLegend["RAF-batched legend.update(items, theme)"]
       AxisMsg --> DOMAxis["RAF-batched textOverlay.addLabel(...)"]

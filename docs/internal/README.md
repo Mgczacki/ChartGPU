@@ -14,9 +14,13 @@ This directory contains technical implementation documentation intended for cont
 
 ### Worker Thread Architecture
 
-- **[WORKER_ARCHITECTURE.md](./WORKER_ARCHITECTURE.md)** - Internal architecture documentation explaining why workers exist (main thread offloading), message protocol flow, render scheduling with MessageChannel (not requestAnimationFrame), device loss handling strategy, multi-chart support in a single worker, and resource lifecycle. Essential reading for understanding the worker thread system design.
+- **[WORKER_ARCHITECTURE.md](./WORKER_ARCHITECTURE.md)** - Internal architecture documentation explaining why workers exist (main thread offloading), message protocol flow, render scheduling with MessageChannel (not requestAnimationFrame), device loss handling strategy, multi-chart support in a single worker, resource lifecycle, and performance metrics tracking. Essential reading for understanding the worker thread system design.
 
-- **[WORKER_THREAD_INTEGRATION.md](./WORKER_THREAD_INTEGRATION.md)** - Comprehensive guide to running ChartGPU in web worker threads using OffscreenCanvas. Covers the `domOverlays` option, event forwarding with `handlePointerEvent()`, callback-based overlay rendering, device loss handling, and worker lifecycle management. Includes architecture diagrams, implementation checklist, and performance considerations.
+- **[WORKER_THREAD_INTEGRATION.md](./WORKER_THREAD_INTEGRATION.md)** - Comprehensive guide to running ChartGPU in web worker threads using OffscreenCanvas. Covers the `domOverlays` option, event forwarding with `handlePointerEvent()`, callback-based overlay rendering, device loss handling, worker lifecycle management, and race condition handling in proxy initialization. Includes architecture diagrams, implementation checklist, and performance considerations.
+
+### Performance Monitoring
+
+- **Performance Metrics System** - ChartGPU provides comprehensive real-time performance monitoring using exact FPS measurement with circular buffer timestamps. The system tracks frame timing, CPU/GPU time, memory usage, and frame drops. Available in both main thread and worker thread modes via `getPerformanceMetrics()`, `getPerformanceCapabilities()`, and `onPerformanceUpdate()` APIs on the `ChartGPUInstance` interface. See [`src/config/types.ts`](../../src/config/types.ts) for `PerformanceMetrics` and `PerformanceCapabilities` type definitions.
 
 ## Audience
 

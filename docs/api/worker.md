@@ -301,6 +301,50 @@ Main-thread proxy class implementing `ChartGPUInstance` interface. Returned by `
 - **DOM Overlays:** Manages tooltip, legend, axis labels, and data zoom slider in main thread
 - **Auto Resize:** Monitors container size and device pixel ratio changes, auto-resizes canvas
 - **Event Forwarding:** Captures pointer and wheel events, forwards to worker for interaction handling
+- **Performance Metrics:** Receives performance metrics from worker thread and caches them locally; forwards performance update events to subscribers
+
+### Performance Monitoring in Worker Mode
+
+The performance metrics API works identically in worker mode:
+
+**`getPerformanceMetrics(): Readonly<PerformanceMetrics> | null`**
+
+Returns cached performance metrics that were most recently forwarded from the worker thread. The proxy maintains a local cache of the latest metrics, so this method is synchronous and does not require postMessage communication.
+
+**`getPerformanceCapabilities(): Readonly<PerformanceCapabilities> | null`**
+
+Returns performance capabilities that were sent by the worker during initialization (in the `ready` message). The proxy caches capabilities locally for synchronous access.
+
+**`onPerformanceUpdate(callback: (metrics: Readonly<PerformanceMetrics>) => void): () => void`**
+
+Subscribes to performance updates from the worker thread. The worker sends `performanceUpdate` messages on every render frame (up to 60fps), and the proxy re-emits these as events to registered callbacks.
+
+**Performance Message Flow:**
+
+```mermaid
+sequenceDiagram
+    participant Main as Main Thread (Proxy)
+    participant Worker as Worker Thread
+    
+    Note over Main,Worker: Initialization
+    Worker-->>Main: ready (with capabilities)
+    Main->>Main: Cache capabilities
+    
+    Note over Main,Worker: Runtime Updates
+    Worker-->>Main: performanceUpdate (every frame)
+    Main->>Main: Cache latest metrics
+    Main->>Main: Emit to subscribers
+```
+
+**Implementation notes:**
+- Performance metrics are tracked in the worker thread by RenderScheduler
+- Metrics are sent from worker to main thread via `performanceUpdate` protocol message
+- Proxy caches the latest metrics for synchronous `getPerformanceMetrics()` access
+- No additional message overhead for subscriptions (updates stream automatically)
+
+For protocol message details, see [Worker Protocol - Performance Updates](worker-protocol.md#performanceupdate).
+
+For a complete usage example, see [`examples/worker-rendering/main.ts`](../../examples/worker-rendering/main.ts).
 
 **Lifecycle:**
 1. Constructor creates proxy with cached state

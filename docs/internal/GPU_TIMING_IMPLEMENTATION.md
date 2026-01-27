@@ -2,7 +2,16 @@
 
 ## Overview
 
-GPU timing is available in the `examples/million-points` benchmark to help distinguish CPU-bound vs GPU-bound frame time.
+GPU timing is part of ChartGPU's comprehensive performance metrics system. It helps distinguish CPU-bound vs GPU-bound frame time in real-time applications and benchmarks.
+
+**Related systems:**
+- **Performance Metrics API:** `getPerformanceMetrics()`, `getPerformanceCapabilities()`, `onPerformanceUpdate()` on `ChartGPUInstance`
+- **Exact FPS measurement:** Circular buffer-based FPS calculation (120 frames = 2 seconds at 60fps)
+- **Frame time statistics:** Min, max, average, p50, p95, p99 percentiles
+- **Memory tracking:** GPU buffer allocation monitoring
+- **Frame drop detection:** Tracks consecutive drops and timestamps
+
+See [`src/config/types.ts`](../../src/config/types.ts) for `PerformanceMetrics` and `PerformanceCapabilities` type definitions.
 
 See:
 - [`examples/million-points/main.ts`](../examples/million-points/main.ts) (stats collection)
@@ -81,6 +90,28 @@ GPU time is sampled via `GPUDevice.queue.onSubmittedWorkDone()` after each `Rend
 - Firefox (WebGPU not yet supported) ❌
 
 **No feature flags required**: `queue.onSubmittedWorkDone()` is part of the core WebGPU API.
+
+## Integration with Performance Metrics System
+
+GPU timing is integrated into the broader performance metrics system:
+
+**In main thread mode:**
+- GPU timing tracked via `queue.onSubmittedWorkDone()` in render loop
+- Metrics calculated by `RenderScheduler` with circular buffer timestamps
+- Exposed via `chartInstance.getPerformanceMetrics()`
+- Updates streamed via `chartInstance.onPerformanceUpdate(callback)`
+
+**In worker thread mode:**
+- GPU timing tracked in `ChartGPUWorkerController` per chart instance
+- Worker emits `PerformanceUpdateMessage` with complete metrics
+- Proxy caches metrics for synchronous getter access
+- Proxy forwards updates to registered `onPerformanceUpdate()` callbacks
+
+**Enabling GPU timing:**
+- Main thread: Enabled automatically when supported (checks `timestamp-query` feature)
+- Worker thread: Can be toggled via `SetGPUTimingMessage` protocol message
+
+See [`WORKER_ARCHITECTURE.md`](./WORKER_ARCHITECTURE.md) for worker performance tracking details.
 
 ## Future Enhancements
 

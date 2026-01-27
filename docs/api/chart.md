@@ -31,8 +31,53 @@ See [ChartGPU.ts](../../src/ChartGPU.ts) for the full interface and lifecycle be
 - `onInteractionXChange(callback: (x: number | null, source?: unknown) => void): () => void`: subscribes to interaction x updates and returns an unsubscribe function. See [`ChartGPU.ts`](../../src/ChartGPU.ts).
 - `getZoomRange(): { start: number; end: number } | null`: returns the current percent-space zoom window in \([0, 100]\), or `null` when data zoom is disabled. See [`ChartGPU.ts`](../../src/ChartGPU.ts) and percent-space semantics in [`createZoomState.ts`](../../src/interaction/createZoomState.ts).
 - `setZoomRange(start: number, end: number): void`: sets the percent-space zoom window (ordered/clamped to \([0, 100]\)); no-op when data zoom is disabled. See [`ChartGPU.ts`](../../src/ChartGPU.ts) and percent-space semantics in [`createZoomState.ts`](../../src/interaction/createZoomState.ts).
+- `getPerformanceMetrics(): Readonly<PerformanceMetrics> | null`: returns a snapshot of current performance metrics including FPS, frame time statistics, memory usage, and frame drops; returns `null` if metrics are not available. Works for both main thread and worker-based charts. See [`PerformanceMetrics`](options.md#performancemetrics) for type details.
+- `getPerformanceCapabilities(): Readonly<PerformanceCapabilities> | null`: returns which performance features are supported (e.g., GPU timing, high-resolution timers); returns `null` if capabilities information is not available. Useful for determining what metrics are available before subscribing to updates. See [`PerformanceCapabilities`](options.md#performancecapabilities) for type details.
+- `onPerformanceUpdate(callback: (metrics: Readonly<PerformanceMetrics>) => void): () => void`: subscribes to real-time performance updates that fire on every render frame; returns an unsubscribe function to clean up the subscription. Works for both main thread and worker-based charts. For worker charts, metrics are forwarded from the worker thread to the main thread automatically. For usage example, see [`examples/worker-rendering/main.ts`](../../examples/worker-rendering/main.ts).
 
 Data upload and scale/bounds derivation occur during [`createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts) `RenderCoordinator.render()` (not during `setOption(...)` itself).
+
+## Performance Monitoring
+
+ChartGPU provides a comprehensive performance metrics system for monitoring rendering performance in real-time.
+
+### Performance Metrics API
+
+Three methods enable performance monitoring:
+
+**`getPerformanceMetrics(): Readonly<PerformanceMetrics> | null`**
+
+Returns a snapshot of current performance metrics. Returns `null` if metrics are not yet available (e.g., before first frame render).
+
+**Metrics include:**
+- **Exact FPS**: Calculated from actual frame time deltas using circular buffer
+- **Frame time statistics**: Min, max, average, and percentiles (p50, p95, p99)
+- **Memory usage**: Current, peak, and total allocated GPU buffer memory
+- **Frame drops**: Total dropped frames and current consecutive drop streak
+- **GPU timing**: CPU vs GPU render time (when supported)
+
+**`getPerformanceCapabilities(): Readonly<PerformanceCapabilities> | null`**
+
+Returns which performance features are supported in the current environment. Returns `null` if capability information is not available.
+
+**Capabilities include:**
+- **GPU timing support**: Whether GPU timestamp queries are available
+- **High-resolution timer**: Whether `performance.now()` provides high-resolution timing
+- **Performance metrics support**: Whether the metrics API is functional
+
+**`onPerformanceUpdate(callback: (metrics: Readonly<PerformanceMetrics>) => void): () => void`**
+
+Subscribes to real-time performance updates that fire on every render frame (up to 60fps). Returns an unsubscribe function.
+
+**Behavior:**
+- Callback fires synchronously after each frame render completes
+- Works for both main thread and worker-based charts
+- For worker charts, metrics are automatically forwarded from worker to main thread
+- Unsubscribe by calling the returned function
+
+For type definitions, see [`PerformanceMetrics`](options.md#performancemetrics) and [`PerformanceCapabilities`](options.md#performancecapabilities).
+
+For a complete usage example, see [`examples/worker-rendering/main.ts`](../../examples/worker-rendering/main.ts).
 
 ## Legend (automatic)
 

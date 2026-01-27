@@ -208,6 +208,113 @@ See [`defaults.ts`](../../src/config/defaults.ts) for the defaults (including gr
 - **Area series fill color precedence**: for `type: 'area'`, effective fill color follows: `areaStyle.color` → `series.color` → theme palette. See [`resolveOptions`](../../src/config/OptionResolver.ts).
 - **Axis ticks**: `AxisConfig.tickLength` controls tick length in CSS pixels (default: 6)
 
+## Performance Metrics Types
+
+ChartGPU provides comprehensive performance monitoring types for tracking rendering performance.
+
+### Branded Types
+
+ChartGPU uses TypeScript branded types for type safety with performance metrics:
+
+**`ExactFPS`**
+
+Branded type for exact FPS measurements. Distinguishes FPS from other numeric values at compile time.
+
+**Source:** [`types.ts`](../../src/config/types.ts)
+
+**`Milliseconds`**
+
+Branded type for millisecond durations. Distinguishes time durations from other numeric values at compile time.
+
+**Source:** [`types.ts`](../../src/config/types.ts)
+
+**`Bytes`**
+
+Branded type for byte sizes. Distinguishes memory sizes from other numeric values at compile time.
+
+**Source:** [`types.ts`](../../src/config/types.ts)
+
+### `FrameTimeStats`
+
+Statistics for frame time measurements. All times are in milliseconds.
+
+**Fields:**
+- `min: Milliseconds`: Minimum frame time in the measurement window
+- `max: Milliseconds`: Maximum frame time in the measurement window
+- `avg: Milliseconds`: Average (mean) frame time
+- `p50: Milliseconds`: 50th percentile (median) frame time
+- `p95: Milliseconds`: 95th percentile frame time
+- `p99: Milliseconds`: 99th percentile frame time
+
+**Source:** [`types.ts`](../../src/config/types.ts)
+
+### `GPUTimingStats`
+
+GPU timing statistics that track CPU vs GPU time for render operations.
+
+**Fields:**
+- `enabled: boolean`: Whether GPU timing is enabled and supported
+- `cpuTime: Milliseconds`: CPU time spent preparing render commands
+- `gpuTime: Milliseconds`: GPU time spent executing render commands
+
+**Note:** GPU timing requires the `timestamp-query` WebGPU feature. Check `PerformanceCapabilities.gpuTimingSupported` to determine availability.
+
+**Source:** [`types.ts`](../../src/config/types.ts)
+
+### `MemoryStats`
+
+Memory usage statistics tracking GPU buffer allocations.
+
+**Fields:**
+- `used: Bytes`: Currently used memory in bytes
+- `peak: Bytes`: Peak memory usage in bytes since initialization
+- `allocated: Bytes`: Total allocated memory in bytes (may include freed regions)
+
+**Source:** [`types.ts`](../../src/config/types.ts)
+
+### `FrameDropStats`
+
+Frame drop detection statistics that track when frame time exceeds expected interval.
+
+**Fields:**
+- `totalDrops: number`: Total number of dropped frames
+- `consecutiveDrops: number`: Consecutive dropped frames (current streak)
+- `lastDropTimestamp: Milliseconds`: Timestamp of last dropped frame
+
+**Note:** A frame is considered "dropped" when frame time exceeds 33ms (approximately 30 FPS threshold).
+
+**Source:** [`types.ts`](../../src/config/types.ts)
+
+### `PerformanceMetrics`
+
+Comprehensive performance metrics providing exact FPS measurement and detailed frame statistics.
+
+**Fields:**
+- `fps: ExactFPS`: Exact FPS calculated from frame time deltas using circular buffer
+- `frameTimeStats: FrameTimeStats`: Frame time statistics (min/max/avg/percentiles)
+- `gpuTiming: GPUTimingStats`: GPU timing statistics (CPU vs GPU time)
+- `memory: MemoryStats`: Memory usage statistics
+- `frameDrops: FrameDropStats`: Frame drop detection statistics
+- `totalFrames: number`: Total frames rendered since initialization
+- `elapsedTime: Milliseconds`: Total time elapsed since initialization
+
+**When null:** `getPerformanceMetrics()` returns `null` if metrics are not yet available (e.g., before first frame render).
+
+**Source:** [`types.ts`](../../src/config/types.ts)
+
+### `PerformanceCapabilities`
+
+Performance capabilities of the current environment, indicating which performance features are supported.
+
+**Fields:**
+- `gpuTimingSupported: boolean`: Whether GPU timing is supported (requires `timestamp-query` WebGPU feature)
+- `highResTimerSupported: boolean`: Whether high-resolution timer is available (`performance.now`)
+- `performanceMetricsSupported: boolean`: Whether performance metrics API is available
+
+**Use case:** Check capabilities before relying on specific metrics (e.g., `gpuTiming` may not be available on all devices).
+
+**Source:** [`types.ts`](../../src/config/types.ts)
+
 ## `resolveOptions(userOptions?: ChartGPUOptions)` / `OptionResolver.resolve(userOptions?: ChartGPUOptions)`
 
 Resolves user options against defaults by deep-merging user-provided values with defaults and returning a resolved options object.
