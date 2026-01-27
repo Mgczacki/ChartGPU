@@ -11,9 +11,297 @@ ChartGPU's worker thread system offloads GPU rendering to a Web Worker, keeping 
 - Support for multiple chart instances in a single worker
 
 **Source files:**
+- Factory function: [`src/worker/createChartInWorker.ts`](../../src/worker/createChartInWorker.ts)
+- Main thread proxy: [`src/worker/ChartGPUWorkerProxy.ts`](../../src/worker/ChartGPUWorkerProxy.ts)
 - Worker controller: [`src/worker/ChartGPUWorkerController.ts`](../../src/worker/ChartGPUWorkerController.ts)
 - Message protocol: [`src/worker/protocol.ts`](../../src/worker/protocol.ts)
-- Worker entrypoint: [`src/worker/index.ts`](../../src/worker/index.ts)
+- Worker entrypoint: [`src/worker/worker-entry.ts`](../../src/worker/worker-entry.ts)
+- Public exports: [`src/worker/index.ts`](../../src/worker/index.ts)
+
+## Worker Proxy Architecture
+
+### Overview
+
+The worker proxy system provides a transparent ChartGPUInstance interface on the main thread while delegating all rendering to a Web Worker. The proxy manages OffscreenCanvas transfer, message correlation, DOM overlay rendering, and event forwarding.
+
+**Key components:**
+1. **createChartInWorker()**: Factory function that creates and initializes worker-based charts
+2. **ChartGPUWorkerProxy**: Main thread proxy implementing ChartGPUInstance interface
+3. **ChartGPUWorkerController**: Worker-side singleton managing multiple chart instances
+4. **Message protocol**: Strongly-typed request/response messages with correlation IDs
+
+### Factory Function: createChartInWorker()
+
+**Signature:**
+```typescript
+async function createChartInWorker(
+  container: HTMLElement,
+  options: ChartGPUOptions,
+  workerOrUrl?: Worker | string | URL
+): Promise<ChartGPUInstance>
+```
+
+**Responsibilities:**
+- Validate container element
+- Create and configure worker (built-in or custom)
+- Create ChartGPUWorkerProxy instance
+- Initialize proxy and wait for ready message
+- Handle initialization errors and cleanup
+
+**Worker creation options:**
+1. **Built-in worker (default):** Uses bundled `worker-entry.ts`
+2. **Custom worker URL:** Load worker from specified path
+3. **Existing worker instance:** Use pre-created worker
+
+**Error handling:**
+- Throws `ChartGPUWorkerError` with detailed error codes
+- Cleans up resources (worker, canvas) on failure
+- 30-second timeout for initialization
+
+**Source:** [`src/worker/createChartInWorker.ts`](../../src/worker/createChartInWorker.ts)
+
+### Main Thread Proxy: ChartGPUWorkerProxy
+
+**Purpose:** Implements ChartGPUInstance interface on main thread while delegating rendering to worker.
+
+**Key responsibilities:**
+1. **State caching:** Maintains local copies of options, interactionX, zoomRange for synchronous getters
+2. **Message correlation:** Tracks request/response pairs with unique message IDs
+3. **Event forwarding:** Captures pointer events and forwards to worker
+4. **DOM overlay management:** Renders tooltip, legend, axis labels, data zoom slider
+5. **Event re-emission:** Receives worker events and emits to registered listeners
+6. **Lifecycle management:** Handles initialization, resize monitoring, and cleanup
+
+**Architecture:**
+
+```
+ChartGPUWorkerProxy
+├── State Cache (synchronous getters)
+│   ├── cachedOptions: ChartGPUOptions
+│   ├── cachedInteractionX: number | null
+│   └── cachedZoomRange: { start, end } | null
+├── Message Correlation System
+│   ├── pendingRequests: Map<messageId, PendingRequest>
+│   └── messageTimeout: number (30s default)
+├── Event System
+│   ├── listeners: Map<eventName, Set<callback>>
+│   └── boundMessageHandler: (MessageEvent) => void
+├── DOM Overlays
+│   ├── tooltip: Tooltip | null
+│   ├── legend: Legend | null
+│   ├── textOverlay: TextOverlay | null
+│   ├── dataZoomSlider: DataZoomSlider | null
+│   └── zoomState: ZoomState | null
+├── Event Forwarding
+│   ├── boundEventHandlers: { pointerdown, pointermove, pointerup, pointerleave, wheel }
+│   ├── pendingMoveEvent: PointerEvent | null (RAF throttling)
+│   └── moveThrottleRafId: number | null
+└── Resize Monitoring
+    ├── resizeObserver: ResizeObserver | null
+    ├── currentDpr: number (device pixel ratio)
+    ├── dprMediaQuery: MediaQueryList | null
+    ├── pendingResize: { width, height } | null
+    └── resizeRafId: number | null
+```
+
+**Source:** [`src/worker/ChartGPUWorkerProxy.ts`](../../src/worker/ChartGPUWorkerProxy.ts)
+
+### OffscreenCanvas Transfer
+
+**Process:**
+1. **Main thread:** Create HTMLCanvasElement and append to container
+2. **Main thread:** Set up event listeners (pointer events, wheel)
+3. **Main thread:** Set up ResizeObserver and DPR monitoring
+4. **Main thread:** Create DOM overlays (tooltip, legend, text, slider)
+5. **Main thread:** Call `canvas.transferControlToOffscreen()`
+6. **Main thread:** Send InitMessage with OffscreenCanvas as transferable
+7. **Worker thread:** Receive OffscreenCanvas and create WebGPU context
+8. **Worker thread:** Send ReadyMessage when initialization complete
+
+**Important:** After transferControlToOffscreen(), the canvas can no longer be accessed from the main thread. All rendering must occur in the worker.
+
+**Source:** See [`ChartGPUWorkerProxy.init()`](../../src/worker/ChartGPUWorkerProxy.ts)
+
+### Message Correlation System
+
+**Purpose:** Track request/response pairs with timeout handling.
+
+**Mechanism:**
+1. Generate unique message ID (timestamp + counter)
+2. Create Promise and store resolve/reject in pendingRequests map
+3. Set up timeout (default 30s) to reject on timeout
+4. Send message to worker
+5. Worker processes and responds with matching message ID
+6. Proxy receives response, looks up pending request, resolves Promise
+7. Clear timeout and remove from map
+
+**Benefits:**
+- Type-safe request/response pairing
+- Automatic timeout handling
+- Proper error propagation
+- No memory leaks (cleanup on timeout/success)
+
+**Source:** See [`ChartGPUWorkerProxy.sendMessageWithResponse()`](../../src/worker/ChartGPUWorkerProxy.ts)
+
+### DOM Overlay Management
+
+**Purpose:** Render tooltip, legend, axis labels, and data zoom slider on main thread while chart renders in worker.
+
+**Components:**
+- **Tooltip:** Hover feedback with data point info (RAF-batched updates)
+- **Legend:** Series names and colors (RAF-batched updates)
+- **Text overlay:** Axis labels with positioning (RAF-batched updates)
+- **Data zoom slider:** Zoom range controls (created if `dataZoom.type === 'slider'`)
+
+**RAF Batching:**
+- Multiple overlay updates within a single frame are batched
+- Prevents layout thrashing from rapid updates
+- Updates applied in single RAF callback
+- Improves performance for high-frequency hover events
+
+**Update flow:**
+1. Worker emits overlay update message (`tooltipUpdate`, `legendUpdate`, `axisLabelsUpdate`)
+2. Proxy receives message and stores in `pendingOverlayUpdates`
+3. Proxy schedules RAF callback if not already scheduled
+4. RAF callback applies all pending updates in batch
+5. Pending updates cleared after application
+
+**Source:** See [`ChartGPUWorkerProxy` overlay methods](../../src/worker/ChartGPUWorkerProxy.ts)
+
+### Event Forwarding to Worker
+
+**Purpose:** Capture pointer events on main thread canvas and forward to worker for interaction handling.
+
+**Event types:**
+- **pointerdown:** Click detection and pan start
+- **pointermove:** Hover, tooltip updates, pan dragging (RAF-throttled)
+- **pointerup:** Click completion and pan end
+- **pointerleave:** Clear hover state
+- **wheel:** Zoom interactions
+
+**Event serialization:**
+- Native PointerEvent and WheelEvent objects cannot be transferred to worker
+- Proxy serializes events to plain objects (PointerEventData)
+- Extracted fields: clientX, clientY, offsetX, offsetY, button, buttons, modifiers, timestamp
+- Worker receives serialized data and processes interactions
+
+**RAF Throttling for pointermove:**
+- Throttles move events to 60fps max
+- Stores latest move event in `pendingMoveEvent`
+- Schedules RAF if not already scheduled
+- RAF callback sends latest event and clears pending
+- Prevents message queue overflow on rapid mouse movement
+
+**Source:** See [`ChartGPUWorkerProxy` event forwarding methods](../../src/worker/ChartGPUWorkerProxy.ts)
+
+### Event Re-emission to Main Thread
+
+**Purpose:** Receive worker event messages and re-emit as ChartGPUInstance events.
+
+**Event types:**
+- **click:** Data point click with hit test results
+- **mouseover:** Hover entered on data point
+- **mouseout:** Hover cleared
+- **crosshairMove:** Crosshair position changed
+
+**Synthetic PointerEvent creation:**
+- Worker cannot transfer real PointerEvent objects
+- Proxy creates synthetic PointerEvent for event payloads
+- Synthetic event has correct clientX/clientY based on canvas position
+- Marked with `pointerId: -1` to indicate synthetic origin
+
+**Source:** See [`ChartGPUWorkerProxy.emit()`](../../src/worker/ChartGPUWorkerProxy.ts) and event handler methods
+
+### ResizeObserver and Device Pixel Ratio Monitoring
+
+**Purpose:** Automatically detect container size changes and device pixel ratio changes, forwarding resize messages to worker.
+
+**ResizeObserver:**
+- Monitors canvas element size changes
+- Detects window resize, container resize, CSS changes
+- RAF-batches resize messages to prevent rapid-fire updates
+- Tracks last known dimensions to avoid no-op resizes
+
+**Device Pixel Ratio monitoring:**
+- Uses `matchMedia` to detect DPR changes
+- Handles window zoom, moving between displays, OS scaling changes
+- Updates `currentDpr` and sends resize message on change
+- Recreates media query for new DPR after change
+
+**RAF batching:**
+- Stores pending resize dimensions
+- Schedules RAF if not already scheduled
+- RAF callback sends resize message with physical pixel dimensions
+- Clears pending resize after sending
+
+**Source:** See [`ChartGPUWorkerProxy` resize monitoring methods](../../src/worker/ChartGPUWorkerProxy.ts)
+
+### Lifecycle and Cleanup
+
+**Initialization:**
+1. Create HTMLCanvasElement and append to container
+2. Set up event listeners on canvas
+3. Set up ResizeObserver and DPR monitoring
+4. Create DOM overlays (tooltip, legend, text, slider)
+5. Transfer canvas control to OffscreenCanvas
+6. Send InitMessage and wait for ReadyMessage
+
+**Disposal:**
+1. Set `isDisposed = true` to prevent new operations
+2. Clean up event listeners and RAF throttling
+3. Clean up ResizeObserver and DPR monitoring
+4. Dispose DOM overlays and cancel RAF batching
+5. Send DisposeMessage to worker
+6. Reject all pending requests with disposed error
+7. Clear all event listeners
+8. Remove worker message handler
+9. Remove canvas from container
+
+**Source:** See [`ChartGPUWorkerProxy.init()`](../../src/worker/ChartGPUWorkerProxy.ts) and [`ChartGPUWorkerProxy.dispose()`](../../src/worker/ChartGPUWorkerProxy.ts)
+
+## Public API
+
+The worker-based rendering is exposed through two equivalent APIs:
+
+**Factory function (recommended):**
+```typescript
+import { createChartInWorker } from 'chartgpu';
+
+const chart = await createChartInWorker(container, options);
+// chart implements ChartGPUInstance interface
+chart.on('click', (payload) => console.log(payload));
+chart.setOption(newOptions);
+chart.dispose();
+```
+
+**Static method (alternative):**
+```typescript
+import { ChartGPU } from 'chartgpu';
+
+const chart = await ChartGPU.createInWorker(container, options);
+// Identical behavior to createChartInWorker()
+```
+
+**Worker options:**
+```typescript
+// Use built-in worker (default)
+const chart = await createChartInWorker(container, options);
+
+// Use custom worker URL
+const chart = await createChartInWorker(container, options, './my-worker.js');
+
+// Use existing worker instance
+const worker = new Worker('./chart-worker.js', { type: 'module' });
+const chart = await createChartInWorker(container, options, worker);
+```
+
+**Proxy transparency:**
+- `ChartGPUWorkerProxy` implements full `ChartGPUInstance` interface
+- All methods, properties, and events work identically to main-thread charts
+- Users can switch between main-thread and worker-based rendering without code changes
+- Only difference: asynchronous initialization (`await createChartInWorker()`)
+
+**Source:** See [`src/worker/index.ts`](../../src/worker/index.ts) for public exports
 
 ## Why Workers for ChartGPU?
 
@@ -57,23 +345,39 @@ WebGPU is particularly well-suited for worker threads:
 graph TB
     subgraph MainThread["Main Thread"]
         App["Application Code"]
-        DOM["DOM Overlays<br/>(tooltip, legend, labels)"]
+        CreateInWorker["createChartInWorker(container, options)"]
+        Proxy["ChartGPUWorkerProxy<br/>(implements ChartGPUInstance)"]
         Canvas["HTMLCanvasElement"]
-        OffscreenTransfer["transferControlToOffscreen()"]
-        MessageSender["postMessage()<br/>Main → Worker"]
-        MessageReceiver["onmessage<br/>Worker → Main"]
-        PointerEvents["Pointer Event Listeners<br/>(canvas)"]
+        OffscreenTransfer["canvas.transferControlToOffscreen()"]
+        EventListeners["Pointer Event Listeners<br/>(pointerdown/move/up/leave/wheel)"]
+        ResizeObs["ResizeObserver + DPR monitoring<br/>(RAF-batched)"]
+        DOMOverlays["DOM Overlays<br/>(tooltip, legend, text, slider)"]
+        StateCache["State Cache<br/>(options, interactionX, zoomRange)"]
+        MessageCorrelation["Message Correlation<br/>(pendingRequests, timeouts)"]
+        EventEmitter["Event Emitter<br/>(click, mouseover, mouseout, crosshairMove)"]
+        MessageSender["worker.postMessage()<br/>Main → Worker"]
+        MessageReceiver["worker.onmessage<br/>Worker → Main"]
     end
 
     subgraph WorkerThread["Worker Thread"]
         Controller["ChartGPUWorkerController<br/>(singleton)"]
         Charts["Map<chartId, ChartInstance>"]
-        Instance["ChartInstance<br/>- GPUContext<br/>- RenderCoordinator<br/>- MessageChannel"]
+        Instance["ChartInstance<br/>- GPUContext<br/>- RenderCoordinator<br/>- MessageChannel<br/>- ChartInstanceState"]
         GPU["WebGPU Device<br/>(OffscreenCanvas)"]
         RenderLoop["MessageChannel.port1.onmessage<br/>(render loop)"]
+        Coordinator["RenderCoordinator<br/>(domOverlays: false)"]
+        HitTest["Hit Testing<br/>(findNearestPoint, findPieSlice, findCandlestick)"]
     end
 
-    App --> Canvas
+    App --> CreateInWorker
+    CreateInWorker --> Proxy
+    Proxy --> Canvas
+    Proxy --> EventListeners
+    Proxy --> ResizeObs
+    Proxy --> DOMOverlays
+    Proxy --> StateCache
+    Proxy --> MessageCorrelation
+    Proxy --> EventEmitter
     Canvas --> OffscreenTransfer
     OffscreenTransfer -->|"OffscreenCanvas (transferred)"| MessageSender
     MessageSender -->|"init message"| Controller
@@ -81,88 +385,137 @@ graph TB
     Charts --> Instance
     Instance --> GPU
     Instance --> RenderLoop
-    RenderLoop -->|"coordinator.render()"| GPU
+    Instance --> Coordinator
+    RenderLoop -->|"coordinator.render()"| Coordinator
+    Coordinator -->|"GPU commands"| GPU
     GPU -->|"rendered frame"| Canvas
-    Instance -->|"DOM overlay data"| MessageReceiver
-    MessageReceiver --> DOM
-    PointerEvents -->|"normalized events"| MessageSender
-    MessageSender -->|"forwardPointerEvent"| Controller
+    Coordinator --> HitTest
+    HitTest -->|"tooltipUpdate, hoverChange, click"| MessageReceiver
+    Coordinator -->|"legendUpdate, axisLabelsUpdate"| MessageReceiver
+    MessageReceiver --> Proxy
+    Proxy --> DOMOverlays
+    Proxy --> EventEmitter
+    EventListeners -->|"PointerEventData"| MessageSender
+    ResizeObs -->|"ResizeMessage"| MessageSender
+    MessageSender -->|"forwardPointerEvent, resize, setOption, appendData, etc."| Controller
+    Controller --> Instance
 ```
 
 ## Message Flow
 
 ### Initialization Sequence
 
-1. **Main thread:** Create HTMLCanvasElement and mount to DOM
-2. **Main thread:** Transfer canvas control via `transferControlToOffscreen()`
-3. **Main thread:** Create Web Worker and post `init` message with OffscreenCanvas
-4. **Worker thread:** Receive `init` message in `ChartGPUWorkerController`
-5. **Worker thread:** Initialize WebGPU context via [`createGPUContext()`](../../src/core/GPUContext.ts)
-6. **Worker thread:** Create [`RenderCoordinator`](../../src/core/createRenderCoordinator.ts) with `domOverlays: false`
-7. **Worker thread:** Set up MessageChannel for render scheduling
-8. **Worker thread:** Emit `ready` message to main thread
-9. **Main thread:** Receive `ready` message and begin sending configuration/data
+1. **Main thread:** Call `createChartInWorker(container, options, workerOrUrl?)`
+2. **Main thread:** Factory function creates Web Worker (built-in or custom)
+3. **Main thread:** Factory function creates `ChartGPUWorkerProxy` instance
+4. **Main thread:** Proxy creates HTMLCanvasElement and appends to container
+5. **Main thread:** Proxy sets up pointer event listeners on canvas
+6. **Main thread:** Proxy sets up ResizeObserver and DPR monitoring
+7. **Main thread:** Proxy creates DOM overlays (tooltip, legend, text, slider)
+8. **Main thread:** Proxy calls `canvas.transferControlToOffscreen()`
+9. **Main thread:** Proxy sends `InitMessage` with OffscreenCanvas (transferred)
+10. **Worker thread:** `ChartGPUWorkerController` receives `init` message
+11. **Worker thread:** Controller initializes WebGPU context via [`createGPUContext()`](../../src/core/GPUContext.ts)
+12. **Worker thread:** Controller creates [`RenderCoordinator`](../../src/core/createRenderCoordinator.ts) with `domOverlays: false`
+13. **Worker thread:** Controller sets up MessageChannel for render scheduling
+14. **Worker thread:** Controller emits `ReadyMessage` to main thread with matching `messageId`
+15. **Main thread:** Proxy receives `ready` message and resolves `init()` Promise
+16. **Main thread:** Factory function returns initialized proxy to application code
 
-**Source:** See [`ChartGPUWorkerController.initChart()`](../../src/worker/ChartGPUWorkerController.ts)
+**Source:** See [`createChartInWorker()`](../../src/worker/createChartInWorker.ts), [`ChartGPUWorkerProxy.init()`](../../src/worker/ChartGPUWorkerProxy.ts), and [`ChartGPUWorkerController.initChart()`](../../src/worker/ChartGPUWorkerController.ts)
 
 ### Configuration and Data Updates
 
-**Pattern:** Main thread sends configuration messages, worker applies changes and requests render
+**Pattern:** Application calls proxy methods → proxy sends messages to worker → worker applies changes and requests render
 
-**Common messages:**
-- `setOption`: Update chart configuration (series, axes, theme)
-- `appendData`: Append new data points to a series (streaming)
-- `appendDataBatch`: Batch append to multiple series
-- `resize`: Update canvas dimensions
+**Common operations:**
+1. **setOption(options):**
+   - Proxy updates `cachedOptions` for synchronous getter
+   - Proxy sends `SetOptionMessage` to worker
+   - Worker calls `coordinator.setOptions()` which triggers `onRequestRender()` callback
+   - Callback posts to MessageChannel, scheduling render
+   
+2. **appendData(seriesIndex, points):**
+   - Proxy serializes data points to ArrayBuffer
+   - Proxy sends `AppendDataMessage` with transferred ArrayBuffer
+   - Worker deserializes data and calls `coordinator.appendData()`
+   - Data append triggers `onRequestRender()` callback
 
-**Render triggering:**
-- Configuration changes trigger `coordinator.setOptions()` which calls `onRequestRender()` callback
-- Data appends trigger `coordinator.appendData()` which calls `onRequestRender()` callback
-- Callbacks post message to MessageChannel, scheduling render
+3. **resize():**
+   - Proxy measures canvas dimensions and device pixel ratio
+   - Proxy sends `ResizeMessage` with physical pixel dimensions
+   - Worker reconfigures canvas and WebGPU context
+   - Renders immediately after resize
 
-**Source:** See [`ChartGPUWorkerController.handleSetOption()`](../../src/worker/ChartGPUWorkerController.ts) and [`ChartGPUWorkerController.handleAppendData()`](../../src/worker/ChartGPUWorkerController.ts)
+**Automatic operations:**
+- **ResizeObserver:** Detects container size changes and sends resize messages (RAF-batched)
+- **DPR monitoring:** Detects device pixel ratio changes and sends resize messages
+
+**Source:** See [`ChartGPUWorkerProxy` methods](../../src/worker/ChartGPUWorkerProxy.ts), [`ChartGPUWorkerController.handleSetOption()`](../../src/worker/ChartGPUWorkerController.ts), and [`ChartGPUWorkerController.handleAppendData()`](../../src/worker/ChartGPUWorkerController.ts)
 
 ### Interaction Flow
 
-**Pattern:** Main thread captures DOM events, computes grid coordinates, forwards to worker
+**Pattern:** Proxy captures DOM events, serializes to PointerEventData, forwards to worker
 
-1. **Main thread:** Pointer event fires on canvas
-2. **Main thread:** Compute grid coordinates using `getBoundingClientRect()` and `GridArea` margins
-3. **Main thread:** Normalize to [`PointerEventData`](../../src/config/types.ts) structure
-4. **Main thread:** Post `forwardPointerEvent` message to worker
-5. **Worker thread:** Receive event in `handlePointerEvent()`
-6. **Worker thread:** Pass to [`coordinator.handlePointerEvent()`](../../src/core/createRenderCoordinator.ts)
+1. **Main thread:** Pointer event fires on canvas (pointerdown/move/up/leave/wheel)
+2. **Main thread:** Proxy event handler receives native PointerEvent
+3. **Main thread:** Proxy serializes event to plain object (PointerEventData)
+   - Extracts: clientX, clientY, offsetX, offsetY, button, buttons, modifiers, timestamp
+   - For wheel events: adds deltaX, deltaY, deltaZ, deltaMode
+4. **Main thread:** Proxy sends `ForwardPointerEventMessage` to worker
+   - pointermove events are RAF-throttled to 60fps
+5. **Worker thread:** `ChartGPUWorkerController` receives `forwardPointerEvent` message
+6. **Worker thread:** Controller passes PointerEventData to `coordinator.handlePointerEvent()`
 7. **Worker thread:** Coordinator performs hit testing and updates interaction state
-8. **Worker thread:** Emit interaction messages to main thread:
-   - `tooltipUpdate`: Tooltip content and position
-   - `hoverChange`: Hover state changed
-   - `click`: Click with hit test results
-   - `crosshairMove`: Crosshair position
-9. **Main thread:** Receive messages and update DOM overlays
+8. **Worker thread:** Coordinator emits interaction messages via callbacks:
+   - `tooltipUpdate`: Tooltip content and position (triggers `onTooltipUpdate`)
+   - `hoverChange`: Hover state changed (derived from tooltip data in `onTooltipUpdate`)
+   - `click`: Click with hit test results (triggers `onClickData`)
+   - `crosshairMove`: Crosshair position (triggers `onCrosshairMove`)
+9. **Main thread:** Proxy receives messages in `handleWorkerMessage()`
+10. **Main thread:** Proxy routes messages to appropriate handlers:
+    - `tooltipUpdate` → RAF-batch and update tooltip DOM
+    - `hoverChange` → Re-emit 'mouseover'/'mouseout' events
+    - `click` → Re-emit 'click' event with synthetic PointerEvent
+    - `crosshairMove` → Update cached interactionX and re-emit event
 
-**Source:** See [`ChartGPUWorkerController.handlePointerEvent()`](../../src/worker/ChartGPUWorkerController.ts) and [INTERNALS.md - Worker Thread Support](../api/INTERNALS.md#worker-thread-support--dom-overlay-separation)
+**Source:** See [`ChartGPUWorkerProxy` event forwarding methods](../../src/worker/ChartGPUWorkerProxy.ts), [`ChartGPUWorkerController.handlePointerEvent()`](../../src/worker/ChartGPUWorkerController.ts), and [INTERNALS.md - Worker Thread Support](../api/INTERNALS.md#worker-thread-support--dom-overlay-separation)
 
 ### DOM Overlay Updates
 
-**Pattern:** Worker computes overlay data, main thread renders DOM elements
+**Pattern:** Worker computes overlay data, proxy receives messages, RAF-batches updates to DOM
 
 **Overlay types:**
-- **Tooltip:** Hover feedback with data point info
-- **Legend:** Series names and colors
-- **Axis labels:** Tick values and axis titles
-- **Crosshair:** Synchronized crosshair across charts
+- **Tooltip:** Hover feedback with data point info (RAF-batched)
+- **Legend:** Series names and colors (RAF-batched)
+- **Axis labels:** Tick values and axis titles (RAF-batched)
+- **Data zoom slider:** Zoom range controls (synchronized with worker zoom state)
 
 **Update triggers:**
 - Tooltip: Pointer movement, hover state changes
 - Legend: Series configuration changes, theme changes
 - Axis labels: Zoom/pan, data updates, axis config changes
-- Crosshair: Pointer movement, `setInteractionX()` calls
+- Data zoom slider: User interaction, programmatic zoom
+
+**RAF batching flow:**
+1. Worker emits overlay update message (`tooltipUpdate`, `legendUpdate`, `axisLabelsUpdate`)
+2. Proxy receives message in `handleWorkerMessage()`
+3. Proxy stores update in `pendingOverlayUpdates` object
+4. Proxy schedules RAF callback if not already scheduled
+5. RAF callback applies all pending updates in single batch
+6. Updates cleared after application
+
+**Benefits of RAF batching:**
+- Prevents layout thrashing from rapid updates
+- Coalesces multiple updates within a single frame
+- Improves performance for high-frequency hover events
+- Maintains 60fps DOM rendering
 
 **Callback implementation:**
 - Worker: RenderCoordinator callbacks emit messages via `ChartGPUWorkerController.emit()`
-- Main thread: Message handler receives and routes to DOM rendering functions
+- Main thread: Proxy receives messages and RAF-batches DOM updates
 
-**Source:** See [RenderCoordinatorCallbacks](../api/INTERNALS.md#rendercoordinatorcallbacks) and [INTERNALS.md - Worker Thread Support](../api/INTERNALS.md#worker-thread-support--dom-overlay-separation)
+**Source:** See [`ChartGPUWorkerProxy` overlay methods](../../src/worker/ChartGPUWorkerProxy.ts), [RenderCoordinatorCallbacks](../api/INTERNALS.md#rendercoordinatorcallbacks), and [INTERNALS.md - Worker Thread Support](../api/INTERNALS.md#worker-thread-support--dom-overlay-separation)
 
 ## Render Scheduling with MessageChannel
 
@@ -351,16 +704,31 @@ GPU devices can be lost due to:
 ### Initialization Phase
 
 **Resource creation order:**
-1. **OffscreenCanvas:** Transferred from main thread in `init` message
-2. **GPUContext:** Created via [`createGPUContext()`](../../src/core/GPUContext.ts) and initialized via [`initializeGPUContext()`](../../src/core/GPUContext.ts)
-3. **MessageChannel:** Created for render scheduling
-4. **RenderCoordinator:** Created with GPU context and callbacks
-5. **DataStore:** Created internally by coordinator for GPU buffer management
-6. **Renderers:** Created per-series by coordinator
 
-**Error handling:** If initialization fails, MessageChannel is closed and error message emitted
+**Main thread (ChartGPUWorkerProxy):**
+1. **Web Worker:** Created from built-in or custom URL
+2. **HTMLCanvasElement:** Created and appended to container
+3. **Event listeners:** Pointer and wheel event handlers attached to canvas
+4. **ResizeObserver:** Set up to monitor container size changes
+5. **DPR monitoring:** MediaQueryList set up to detect device pixel ratio changes
+6. **DOM overlays:** Tooltip, legend, text overlay, and optional data zoom slider created
+7. **OffscreenCanvas:** Created via `canvas.transferControlToOffscreen()`
+8. **InitMessage:** Sent to worker with OffscreenCanvas transfer
 
-**Source:** See [`ChartGPUWorkerController.initChart()`](../../src/worker/ChartGPUWorkerController.ts)
+**Worker thread (ChartGPUWorkerController):**
+9. **GPUContext:** Created via [`createGPUContext()`](../../src/core/GPUContext.ts) and initialized via [`initializeGPUContext()`](../../src/core/GPUContext.ts)
+10. **MessageChannel:** Created for render scheduling
+11. **RenderCoordinator:** Created with GPU context and worker-mode callbacks
+12. **DataStore:** Created internally by coordinator for GPU buffer management
+13. **Renderers:** Created per-series by coordinator
+14. **ReadyMessage:** Emitted to main thread with matching messageId
+
+**Error handling:** 
+- If worker initialization fails, MessageChannel is closed and error message emitted
+- If proxy initialization fails, proxy is disposed and resources cleaned up
+- Factory function re-throws errors for application handling
+
+**Source:** See [`createChartInWorker()`](../../src/worker/createChartInWorker.ts), [`ChartGPUWorkerProxy.init()`](../../src/worker/ChartGPUWorkerProxy.ts), and [`ChartGPUWorkerController.initChart()`](../../src/worker/ChartGPUWorkerController.ts)
 
 ### Runtime Phase
 
@@ -375,33 +743,62 @@ GPU devices can be lost due to:
 ### Cleanup Phase
 
 **Resource destruction order:**
-1. **Mark disposed:** Set `state.disposed = true` (prevents new operations)
-2. **Close MessageChannel:** Close both ports to stop render loop
-3. **Dispose coordinator:** Calls `coordinator.dispose()`
-   - Destroys all GPU buffers via `dataStore.dispose()`
-   - Destroys all renderer pipelines
-   - Cleans up interaction state
-4. **Destroy GPU context:** Calls [`destroyGPUContext()`](../../src/core/GPUContext.ts)
-   - Calls `device.destroy()` with error handling
-   - Resets context state
-5. **Remove from registry:** Delete from `charts` map
-6. **Emit disposed message:** Notify main thread with any cleanup errors
+
+**Main thread (ChartGPUWorkerProxy):**
+1. **Mark disposed:** Set `isDisposed = true` (prevents new operations)
+2. **Clean up event listeners:** Remove pointer and wheel event handlers from canvas
+3. **Clean up RAF throttling:** Cancel pending RAF for pointermove events
+4. **Clean up resize monitoring:** Disconnect ResizeObserver, cancel pending RAF
+5. **Clean up DPR monitoring:** Remove MediaQueryList listener
+6. **Dispose DOM overlays:** Destroy tooltip, legend, text overlay, data zoom slider
+7. **Cancel RAF batching:** Cancel pending RAF for overlay updates
+8. **Send DisposeMessage:** Notify worker to clean up chart instance
+9. **Reject pending requests:** Clear all pending message correlation requests
+10. **Clear event listeners:** Remove all registered event callbacks
+11. **Remove worker handler:** Remove worker message event listener
+12. **Remove canvas:** Remove canvas element from container
+
+**Worker thread (ChartGPUWorkerController):**
+13. **Mark disposed:** Set `state.disposed = true` (prevents new operations)
+14. **Close MessageChannel:** Close both ports to stop render loop
+15. **Dispose coordinator:** Calls `coordinator.dispose()`
+    - Destroys all GPU buffers via `dataStore.dispose()`
+    - Destroys all renderer pipelines
+    - Cleans up interaction state
+16. **Destroy GPU context:** Calls [`destroyGPUContext()`](../../src/core/GPUContext.ts)
+    - Calls `device.destroy()` with error handling
+    - Resets context state
+17. **Remove from registry:** Delete from `charts` map
+18. **Emit disposed message:** Notify main thread with any cleanup errors
 
 **Best-effort cleanup:** Non-fatal errors are collected and reported in `disposed` message
 
-**Source:** See [`ChartGPUWorkerController.disposeChart()`](../../src/worker/ChartGPUWorkerController.ts)
+**Source:** See [`ChartGPUWorkerProxy.dispose()`](../../src/worker/ChartGPUWorkerProxy.ts) and [`ChartGPUWorkerController.disposeChart()`](../../src/worker/ChartGPUWorkerController.ts)
 
 ### Memory Leak Prevention
 
 **Critical cleanup patterns:**
-- Always close MessageChannel ports (prevents event listener leaks)
-- Always destroy GPU buffers (prevents GPU memory leaks)
-- Always call `device.destroy()` (releases GPU resources)
+
+**Main thread (ChartGPUWorkerProxy):**
+- Remove all event listeners from canvas (prevents handler retention)
+- Cancel all RAF callbacks (prevents queued function retention)
+- Disconnect ResizeObserver (prevents observer retention)
+- Remove MediaQueryList listener (prevents listener retention)
+- Dispose all DOM overlays (removes DOM elements and event handlers)
+- Clear pending requests map (prevents promise retention)
+- Clear event listeners map (prevents callback retention)
+- Remove worker message handler (prevents handler retention)
+- Remove canvas from DOM (prevents element retention)
+
+**Worker thread (ChartGPUWorkerController):**
+- Close MessageChannel ports (prevents event listener leaks)
+- Destroy GPU buffers (prevents GPU memory leaks)
+- Call `device.destroy()` (releases GPU resources)
 - Remove chart from map (prevents memory retention)
 
-**Double-dispose protection:** Attempting to dispose an already-disposed chart emits error and returns early
+**Double-dispose protection:** Attempting to dispose an already-disposed chart is a no-op (silent for proxy, error message for worker)
 
-**Source:** See [`ChartGPUWorkerController.disposeChart()`](../../src/worker/ChartGPUWorkerController.ts)
+**Source:** See [`ChartGPUWorkerProxy.dispose()`](../../src/worker/ChartGPUWorkerProxy.ts) and [`ChartGPUWorkerController.disposeChart()`](../../src/worker/ChartGPUWorkerController.ts)
 
 ## Error Handling Strategy
 
@@ -449,7 +846,64 @@ GPU devices can be lost due to:
 
 ## Performance Optimizations
 
-### Shared State Closures
+### RAF Batching for DOM Overlays (Main Thread)
+
+**Problem:** Rapid worker messages (tooltipUpdate, legendUpdate, axisLabelsUpdate) cause layout thrashing
+
+**Solution:** Batch DOM updates in single RAF callback
+
+**Mechanism:**
+- Store incoming overlay updates in `pendingOverlayUpdates` object
+- Schedule RAF callback if not already scheduled
+- RAF callback applies all pending updates in single batch
+- Clear pending updates after application
+
+**Benefits:**
+- Prevents layout thrashing from multiple DOM reads/writes
+- Coalesces updates within a single frame
+- Maintains 60fps DOM rendering performance
+
+**Source:** See [`ChartGPUWorkerProxy` overlay methods](../../src/worker/ChartGPUWorkerProxy.ts)
+
+### RAF Throttling for Pointermove Events (Main Thread)
+
+**Problem:** Rapid pointermove events overwhelm worker message queue
+
+**Solution:** Throttle pointermove forwarding to 60fps via RAF
+
+**Mechanism:**
+- Store latest pointermove event in `pendingMoveEvent`
+- Schedule RAF callback if not already scheduled
+- RAF callback sends latest event and clears pending
+- Subsequent move events update `pendingMoveEvent` without scheduling
+
+**Benefits:**
+- Limits message rate to 60fps max
+- Prevents message queue overflow
+- Reduces worker processing overhead
+
+**Source:** See [`ChartGPUWorkerProxy` event forwarding methods](../../src/worker/ChartGPUWorkerProxy.ts)
+
+### RAF Batching for Resize Messages (Main Thread)
+
+**Problem:** Rapid resize events (window drag-resize) flood worker with resize messages
+
+**Solution:** Batch resize messages via RAF
+
+**Mechanism:**
+- ResizeObserver callback stores pending dimensions
+- Schedule RAF if not already scheduled
+- RAF callback sends resize message with latest dimensions
+- Clear pending resize after sending
+
+**Benefits:**
+- Coalesces rapid resize events during window drag
+- Prevents message queue overflow
+- Worker processes only final dimensions
+
+**Source:** See [`ChartGPUWorkerProxy` resize monitoring methods](../../src/worker/ChartGPUWorkerProxy.ts)
+
+### Shared State Closures (Worker Thread)
 
 **Problem:** Map lookups in hot paths (onRequestRender called on every data update at 60fps)
 
@@ -459,7 +913,7 @@ GPU devices can be lost due to:
 
 **Source:** See [`ChartGPUWorkerController.initChart()`](../../src/worker/ChartGPUWorkerController.ts) onRequestRender callback and render loop
 
-### Cached Render Loop References
+### Cached Render Loop References (Worker Thread)
 
 **Problem:** Render loop executes 60 times per second, Map lookup is overhead
 
@@ -469,7 +923,7 @@ GPU devices can be lost due to:
 
 **Source:** See [`ChartGPUWorkerController.initChart()`](../../src/worker/ChartGPUWorkerController.ts) render loop setup
 
-### Optimized Data Deserialization
+### Optimized Data Deserialization (Worker Thread)
 
 **Performance-critical path:** `deserializeDataPoints()` called on every data append
 
@@ -494,7 +948,7 @@ GPU devices can be lost due to:
 
 **Important:** Main thread cannot access transferred buffers (use separate buffer per message)
 
-**Source:** See [`getTransferables()`](../../src/worker/protocol.ts) and [worker-protocol.md - Transferable Objects](../api/worker-protocol.md#transferable-objects)
+**Source:** See [`ChartGPUWorkerProxy.serializeDataPoints()`](../../src/worker/ChartGPUWorkerProxy.ts), [`getTransferables()`](../../src/worker/protocol.ts), and [worker-protocol.md - Transferable Objects](../api/worker-protocol.md#transferable-objects)
 
 ### Batch Operations
 
@@ -507,7 +961,7 @@ GPU devices can be lost due to:
 
 **Source:** See [`ChartGPUWorkerController.handleAppendDataBatch()`](../../src/worker/ChartGPUWorkerController.ts)
 
-### Reduced Branching
+### Reduced Branching (Worker Thread)
 
 **Pattern:** Early returns instead of nested conditionals (e.g., click handler)
 
@@ -517,10 +971,24 @@ GPU devices can be lost due to:
 
 ## Related Documentation
 
+### Worker API Documentation
 - [Worker Communication Protocol](../api/worker-protocol.md) - Complete message protocol reference
+- [Worker API](../api/worker.md) - ChartGPUWorkerController and utilities documentation
+
+### Source Files
+- Factory function: [`src/worker/createChartInWorker.ts`](../../src/worker/createChartInWorker.ts)
+- Main thread proxy: [`src/worker/ChartGPUWorkerProxy.ts`](../../src/worker/ChartGPUWorkerProxy.ts)
+- Worker controller: [`src/worker/ChartGPUWorkerController.ts`](../../src/worker/ChartGPUWorkerController.ts)
+- Message protocol: [`src/worker/protocol.ts`](../../src/worker/protocol.ts)
+- Worker types: [`src/worker/types.ts`](../../src/worker/types.ts)
+- Worker entrypoint: [`src/worker/worker-entry.ts`](../../src/worker/worker-entry.ts)
+
+### Integration Guides
 - [Worker Thread Integration Guide](WORKER_THREAD_INTEGRATION.md) - Implementation guide for main thread
 - [INTERNALS.md - Worker Thread Support](../api/INTERNALS.md#worker-thread-support--dom-overlay-separation) - RenderCoordinator integration
 - [RenderCoordinator Callbacks](../api/INTERNALS.md#rendercoordinatorcallbacks) - Callback interface details
+
+### Related Components
 - [GPUContext](../api/gpu-context.md) - GPU context management
 - [RenderScheduler](../api/render-scheduler.md) - Main thread render scheduling (comparison)
 
@@ -565,13 +1033,40 @@ GPU devices can be lost due to:
 ## Summary
 
 The ChartGPU worker thread architecture provides:
-- **Main thread responsiveness:** GPU operations don't block UI
-- **Message-based protocol:** Clean separation of concerns
-- **MessageChannel scheduling:** Event-driven render loop without RAF
-- **Device loss handling:** Detection, state tracking, and error reporting
-- **Multi-chart support:** Multiple independent chart instances per worker
-- **Resource lifecycle:** Proper initialization, cleanup, and leak prevention
-- **Performance optimizations:** Zero-copy transfers, closure caching, coalescing
-- **Error handling:** Comprehensive validation and error reporting
 
-This architecture enables real-time streaming data visualization with excellent UI responsiveness and robust error handling.
+**Proxy Architecture:**
+- **Transparent API:** `ChartGPUWorkerProxy` implements full `ChartGPUInstance` interface
+- **Factory function:** `createChartInWorker()` provides simple worker-based chart creation
+- **OffscreenCanvas transfer:** Main thread creates canvas, worker renders via OffscreenCanvas
+- **Message correlation:** Unique IDs track request/response pairs with timeout handling
+- **State caching:** Local copies of options/interactionX/zoomRange for synchronous getters
+
+**Main Thread Responsibilities:**
+- **DOM overlay management:** Render tooltip, legend, axis labels, data zoom slider
+- **Event forwarding:** Capture pointer events and forward to worker (RAF-throttled)
+- **Resize monitoring:** ResizeObserver + DPR monitoring with RAF-batched messages
+- **Event re-emission:** Receive worker events and emit to registered listeners
+- **RAF batching:** Coalesce rapid overlay updates to prevent layout thrashing
+
+**Worker Thread Responsibilities:**
+- **GPU rendering:** WebGPU operations on OffscreenCanvas
+- **Hit testing:** Pointer interaction processing and data point detection
+- **Render scheduling:** MessageChannel-based render loop without RAF
+- **Message processing:** Handle configuration, data, resize, and interaction messages
+- **Multi-chart support:** Single worker manages multiple independent chart instances
+
+**Core Features:**
+- **Main thread responsiveness:** GPU operations don't block UI
+- **Message-based protocol:** Clean separation of concerns with typed messages
+- **Device loss handling:** Detection, state tracking, and error reporting
+- **Resource lifecycle:** Proper initialization, cleanup, and leak prevention
+- **Error handling:** Comprehensive validation and error reporting with error codes
+
+**Performance Optimizations:**
+- **Zero-copy data transfer:** ArrayBuffer transfer for streaming data
+- **RAF batching:** DOM overlays, resize messages, pointermove events
+- **Closure caching:** Eliminate Map lookups in hot paths
+- **Batch operations:** Multi-series data appends in single message
+- **Reduced branching:** Early returns for better CPU pipeline utilization
+
+This architecture enables real-time streaming data visualization with excellent UI responsiveness, transparent API, and robust error handling.

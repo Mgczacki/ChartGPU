@@ -104,14 +104,14 @@ export interface ForwardPointerEventMessage {
 
 /**
  * Set the zoom range programmatically.
- * Start and end are normalized [0, 1] values.
+ * Start and end are in percent space [0, 100].
  */
 export interface SetZoomRangeMessage {
   readonly type: 'setZoomRange';
   readonly chartId: string;
-  /** Normalized start position [0, 1]. */
+  /** Start position in percent space [0, 100]. */
   readonly start: number;
-  /** Normalized end position [0, 1]. */
+  /** End position in percent space [0, 100]. */
   readonly end: number;
 }
 
@@ -267,9 +267,9 @@ export interface CrosshairMoveMessage {
 export interface ZoomChangeMessage {
   readonly type: 'zoomChange';
   readonly chartId: string;
-  /** Normalized start position [0, 1]. */
+  /** Start position in percent space [0, 100]. */
   readonly start: number;
-  /** Normalized end position [0, 1]. */
+  /** End position in percent space [0, 100]. */
   readonly end: number;
 }
 

@@ -231,6 +231,21 @@ export class ChartGPUWorkerController {
       const gpuContext = createGPUContext(msg.canvas, gpuOptions);
       let initializedContext = await initializeGPUContext(gpuContext);
 
+      // Resolve chart options
+      const resolvedOptions = resolveOptions(msg.options);
+
+      // Create MessageChannel for render scheduling
+      renderChannel = new MessageChannel();
+      
+      // PERFORMANCE: Pre-create shared instance state that will be captured in coordinator callbacks
+      // This avoids Map lookups in hot paths (onRequestRender called on every data update/zoom/resize)
+      // CRITICAL: Must be declared BEFORE device.lost handler to avoid ReferenceError
+      const state: ChartInstanceState = {
+        renderPending: false,
+        disposed: false,
+        deviceLost: false,
+      };
+
       // Set up early device loss monitoring (before coordinator creation)
       // This catches device loss during initialization
       // PERFORMANCE: Capture state reference to avoid Map lookup in device.lost handler
@@ -258,20 +273,6 @@ export class ChartGPUWorkerController {
           this.emitError(msg.chartId, 'RENDER_ERROR', errorMessage, 'uncaptured_gpu_error');
         });
       }
-
-      // Resolve chart options
-      const resolvedOptions = resolveOptions(msg.options);
-
-      // Create MessageChannel for render scheduling
-      renderChannel = new MessageChannel();
-      
-      // PERFORMANCE: Pre-create shared instance state that will be captured in coordinator callbacks
-      // This avoids Map lookups in hot paths (onRequestRender called on every data update/zoom/resize)
-      const state: ChartInstanceState = {
-        renderPending: false,
-        disposed: false,
-        deviceLost: false,
-      };
 
       // Create render coordinator with worker-mode callbacks
       const coordinator = createRenderCoordinator(
@@ -637,7 +638,8 @@ export class ChartGPUWorkerController {
       if (targetWidth === 0 || targetHeight === 0) {
         throw new Error(
           `Computed canvas dimensions are zero: ${targetWidth}x${targetHeight}. ` +
-          `CSS dimensions (${width}x${height}) are too small for DPR ${devicePixelRatio}.`
+          `CSS dimensions (${width}x${height}px) are too small for device pixel ratio ${devicePixelRatio}. ` +
+          `Minimum canvas size is 1px in CSS space.`
         );
       }
 
@@ -713,14 +715,14 @@ export class ChartGPUWorkerController {
    * Sets the zoom range programmatically.
    * 
    * @param chartId - Chart instance identifier
-   * @param start - Normalized start position [0, 1]
-   * @param end - Normalized end position [0, 1]
+   * @param start - Start position in percent space [0, 100]
+   * @param end - End position in percent space [0, 100]
    */
   private handleSetZoomRange(chartId: string, start: number, end: number): void {
     try {
-      // Validate zoom range
-      if (start < 0 || start > 1 || end < 0 || end > 1) {
-        throw new Error(`Invalid zoom range: [${start}, ${end}]. Values must be in [0, 1].`);
+      // Validate zoom range (percent space [0, 100])
+      if (start < 0 || start > 100 || end < 0 || end > 100) {
+        throw new Error(`Invalid zoom range: [${start}, ${end}]. Values must be in [0, 100] (percent space).`);
       }
       if (start >= end) {
         throw new Error(`Invalid zoom range: start (${start}) must be less than end (${end}).`);

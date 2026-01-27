@@ -6,7 +6,7 @@ The ChartGPU worker module provides a complete API for implementing GPU-accelera
 
 **Module:** `chartgpu/worker`
 
-**Source:** [`src/worker/index.ts`](../../src/worker/index.ts), [`src/worker/ChartGPUWorkerController.ts`](../../src/worker/ChartGPUWorkerController.ts)
+**Source:** [`src/worker/index.ts`](../../src/worker/index.ts), [`src/worker/createChartInWorker.ts`](../../src/worker/createChartInWorker.ts), [`src/worker/ChartGPUWorkerController.ts`](../../src/worker/ChartGPUWorkerController.ts)
 
 **Related:** [Worker Communication Protocol](worker-protocol.md)
 
@@ -27,7 +27,171 @@ graph TB
     MainThread --> DOM["DOM Overlays<br/>(Tooltips, Legend, Axis Labels)"]
 ```
 
-## Quick Start
+## Public API (Recommended)
+
+The recommended way to create worker-based charts is via the high-level factory function or static method. These handle all worker setup, canvas transfer, and message coordination automatically.
+
+**Source:** [`src/worker/createChartInWorker.ts`](../../src/worker/createChartInWorker.ts), [`src/worker/ChartGPUWorkerProxy.ts`](../../src/worker/ChartGPUWorkerProxy.ts)
+
+### `createChartInWorker(container: HTMLElement, options: ChartGPUOptions, workerOrUrl?: Worker | string | URL): Promise<ChartGPUInstance>`
+
+Factory function for creating worker-based chart instances with automatic setup.
+
+**Parameters:**
+- `container`: HTML element to attach canvas to (canvas will be created and appended automatically)
+- `options`: Chart configuration (same as [`ChartGPU.create()`](chart.md#chartgpucreate))
+- `workerOrUrl` (optional): Worker source - see [Worker Source Options](#worker-source-options)
+
+**Returns:** Promise resolving to [`ChartGPUInstance`](chart.md#chartgpuinstance) proxy (same interface as main-thread charts)
+
+**Throws:** `ChartGPUWorkerError` if:
+- Container is invalid (not an HTMLElement)
+- Worker creation or initialization fails
+- Canvas creation or transfer fails
+- Worker doesn't respond within 30s timeout
+
+**Source:** [`src/worker/createChartInWorker.ts`](../../src/worker/createChartInWorker.ts)
+
+### `ChartGPU.createInWorker(container: HTMLElement, options: ChartGPUOptions, workerOrUrl?: Worker | string | URL): Promise<ChartGPUInstance>`
+
+Static method on `ChartGPU` namespace - **recommended entry point** for worker-based charts.
+
+**Parameters:** Same as [`createChartInWorker()`](#createchartinworkercontainer-htmlelement-options-chartgpuoptions-workerorurl-worker--string--url-promisechartgpuinstance)
+
+**Returns:** Same as [`createChartInWorker()`](#createchartinworkercontainer-htmlelement-options-chartgpuoptions-workerorurl-worker--string--url-promisechartgpuinstance)
+
+**Note:** This is an alias for `createChartInWorker()` - identical behavior, more discoverable API.
+
+**Source:** [`src/index.ts`](../../src/index.ts) exports `createChartInWorker` as `ChartGPU.createInWorker`
+
+### Worker Source Options
+
+The optional `workerOrUrl` parameter accepts three forms:
+
+| Type | Behavior | Use Case |
+|------|----------|----------|
+| `undefined` | Use built-in worker (bundled) | Default - simplest option |
+| `string \| URL` | Create worker from URL/path | Custom worker location or CDN |
+| `Worker` | Use existing worker instance | Shared worker, pre-warmed worker |
+
+**Built-in worker** (recommended):
+- Worker bundled with library
+- Automatically resolved by bundler
+- No configuration needed
+
+**Custom worker URL:**
+- Provide path to custom worker script
+- Must implement [ChartGPUWorkerController protocol](#chartgpuworkercontroller)
+- Useful for CDN hosting or custom builds
+
+**Existing worker instance:**
+- Reuse worker across multiple charts
+- Factory does NOT terminate worker on dispose (caller's responsibility)
+- Useful for worker pooling
+
+**Source:** [`createChartInWorker()` implementation](../../src/worker/createChartInWorker.ts)
+
+### When to Use Worker-Based Charts
+
+Choose worker-based rendering when:
+
+**✅ Use Workers When:**
+- Large datasets (>10K points) with frequent updates
+- Real-time streaming data with high update rates
+- Complex multi-series charts (>10 series)
+- Application needs to remain responsive during chart updates
+- Main thread is busy with other UI operations
+- Mobile/low-power devices (offload work from main thread)
+
+**❌ Use Main Thread When:**
+- Small datasets (<1K points)
+- Static or infrequently updated charts
+- Simple single-series charts
+- Worker overhead outweighs benefits
+- Debugging or development (easier stack traces)
+- Browser doesn't support OffscreenCanvas (Safari < 16.4, Firefox < 105)
+
+**Performance Tradeoff:**
+- Worker setup overhead: ~50-100ms (one-time)
+- Message passing overhead: ~0.1-1ms per update
+- Main thread blocking eliminated: priceless for large datasets
+
+**Source:** See [Performance Documentation](../performance.md) for benchmarks
+
+### `ChartGPUWorkerProxy`
+
+Main-thread proxy class implementing `ChartGPUInstance` interface. Returned by `createChartInWorker()`.
+
+**Interface:** Identical to [`ChartGPUInstance`](chart.md#chartgpuinstance) - use same methods and events
+
+**Implementation Details:**
+- **State Cache:** Maintains local copies of options, disposed, interactionX, zoomRange for synchronous getters
+- **Message Correlation:** Unique message IDs track request/response pairs with 30s timeout
+- **Event System:** Re-emits worker events (`click`, `mouseover`, `mouseout`, `crosshairMove`) to registered listeners
+- **DOM Overlays:** Manages tooltip, legend, axis labels, and data zoom slider in main thread
+- **Auto Resize:** Monitors container size and device pixel ratio changes, auto-resizes canvas
+- **Event Forwarding:** Captures pointer and wheel events, forwards to worker for interaction handling
+
+**Lifecycle:**
+1. Constructor creates proxy with cached state
+2. `init()` creates canvas, transfers to worker, waits for ready message
+3. Methods send messages to worker, update local cache
+4. `dispose()` cleans up overlays, terminates worker (if created by factory), removes canvas
+
+**Source:** [`src/worker/ChartGPUWorkerProxy.ts`](../../src/worker/ChartGPUWorkerProxy.ts)
+
+**Note:** Users don't typically construct this directly - use `createChartInWorker()` instead.
+
+### Types
+
+#### `WorkerConfig`
+
+Configuration for `ChartGPUWorkerProxy` constructor (used internally by factory).
+
+**Fields:**
+- `worker: Worker`: Web Worker instance for rendering
+- `chartId?: string`: Unique chart identifier (auto-generated if omitted)
+- `messageTimeout?: number`: Timeout for async operations in ms (default: 30000)
+- `gpuOptions?: { powerPreference?: 'low-power' | 'high-performance'; requiredFeatures?: ReadonlyArray<string> }`: WebGPU adapter options (optional)
+
+**Source:** [`src/worker/types.ts`](../../src/worker/types.ts)
+
+#### `ChartGPUWorkerError`
+
+Error class for worker operations. Extends native `Error` with categorized error codes.
+
+**Properties:**
+- `code: string`: Error category code (see table below)
+- `operation: string`: Operation that failed
+- `chartId?: string`: Chart ID if available
+
+**Error Codes:**
+| Code | Description | Recovery |
+|------|-------------|----------|
+| `INVALID_ARGUMENT` | Invalid function argument | Fix call site |
+| `WEBGPU_INIT_FAILED` | WebGPU/worker initialization failed | Check browser support |
+| `DISPOSED` | Operation on disposed chart | Don't call after dispose |
+| `TIMEOUT` | Operation timeout (30s default) | Check worker responsiveness |
+| `COMMUNICATION_ERROR` | postMessage failed | Check message structure |
+| `UNKNOWN` | Unclassified error | Log and report |
+
+**Source:** [`src/worker/types.ts`](../../src/worker/types.ts)
+
+## Low-Level API (Advanced)
+
+The following sections document the low-level worker controller and protocol for advanced use cases. Most users should use the [Public API](#public-api-recommended) instead.
+
+### When to Use Low-Level API
+
+Use the low-level worker controller when:
+- Implementing custom worker communication patterns
+- Integrating with existing worker infrastructure
+- Building abstractions on top of ChartGPU
+- Fine-grained control over message flow
+
+For standard use cases, prefer the [high-level factory function](#createchartinworker).
+
+## Quick Start (Low-Level)
 
 ### Worker Setup
 
@@ -91,11 +255,7 @@ Main controller class for managing chart instances in a Web Worker. Handles mess
 
 **Source:** [`src/worker/ChartGPUWorkerController.ts`](../../src/worker/ChartGPUWorkerController.ts)
 
-### Constructor
-
-```typescript
-new ChartGPUWorkerController()
-```
+### `new ChartGPUWorkerController()`
 
 Creates a new worker controller instance. Typically instantiated once per worker.
 
@@ -105,37 +265,20 @@ Creates a new worker controller instance. Typically instantiated once per worker
 
 ### Instance Methods
 
-#### `onMessage(handler)`
+#### `onMessage(handler: (msg: WorkerOutboundMessage) => void): void`
 
 Registers a callback to receive outbound messages for sending to the main thread.
-
-**Signature:**
-```typescript
-onMessage(handler: (msg: WorkerOutboundMessage) => void): void
-```
 
 **Parameters:**
 - `handler`: Function called when controller emits messages to main thread
 
 **When to call:** Immediately after constructing the controller, before processing any messages
 
-**Usage:**
-```typescript
-controller.onMessage((msg) => {
-  self.postMessage(msg);
-});
-```
-
 **Source:** See [`WorkerOutboundMessage`](worker-protocol.md#outbound-messages-worker--main) for all message types
 
-#### `handleMessage(msg)`
+#### `async handleMessage(msg: WorkerInboundMessage): Promise<void>`
 
 Main entry point for processing inbound messages from the main thread.
-
-**Signature:**
-```typescript
-async handleMessage(msg: WorkerInboundMessage): Promise<void>
-```
 
 **Parameters:**
 - `msg`: Inbound message from main thread
@@ -144,25 +287,13 @@ async handleMessage(msg: WorkerInboundMessage): Promise<void>
 
 **Error Handling:** Catches all errors and emits `error` message to main thread. Safe to call without try/catch.
 
-**Usage:**
-```typescript
-self.onmessage = async (event) => {
-  await controller.handleMessage(event.data);
-};
-```
-
 **Message Types:** See [`WorkerInboundMessage`](worker-protocol.md#inbound-messages-main--worker) for all supported messages
 
 **Source:** [`ChartGPUWorkerController.handleMessage()`](../../src/worker/ChartGPUWorkerController.ts)
 
-#### `dispose()`
+#### `dispose(): void`
 
 Disposes all chart instances and cleans up controller resources.
-
-**Signature:**
-```typescript
-dispose(): void
-```
 
 **When to call:** Before terminating the worker (in response to worker shutdown signal)
 
@@ -258,29 +389,20 @@ Messages emitted by worker thread:
 
 Worker event data for hover and click events. Cannot include native `PointerEvent` (not cloneable for postMessage).
 
-**Shape:**
-```typescript
-interface WorkerEventPayload {
-  readonly seriesIndex: number;
-  readonly dataIndex: number;
-  readonly value: readonly [number, number] | readonly [number, number, number, number, number];
-  readonly x: number;  // CSS pixels
-  readonly y: number;  // CSS pixels
-}
-```
+**Fields:**
+- `seriesIndex: number`: Index of the series
+- `dataIndex: number`: Index of the data point within the series
+- `value: readonly [number, number] | readonly [number, number, number, number, number]`: Data point value (DataPoint or OHLCDataPoint)
+- `x: number`: CSS pixel x coordinate
+- `y: number`: CSS pixel y coordinate
 
 **Source:** [`src/worker/protocol.ts`](../../src/worker/protocol.ts)
 
 ## Utility Functions
 
-### `getTransferables(msg)`
+### `getTransferables(msg: WorkerInboundMessage): readonly Transferable[]`
 
 Extracts transferable objects from an inbound message for efficient postMessage.
-
-**Signature:**
-```typescript
-function getTransferables(msg: WorkerInboundMessage): readonly Transferable[]
-```
 
 **Parameters:**
 - `msg`: Inbound message to extract transferables from
@@ -291,21 +413,7 @@ function getTransferables(msg: WorkerInboundMessage): readonly Transferable[]
 - `OffscreenCanvas`: Graphics rendering context (from `init`)
 - `ArrayBuffer`: Binary data buffers (from `appendData`, `appendDataBatch`)
 
-**Usage:**
-```typescript
-import { getTransferables } from 'chartgpu/worker';
-
-const msg: InitMessage = {
-  type: 'init',
-  chartId: 'chart-1',
-  messageId: crypto.randomUUID(),
-  canvas: offscreenCanvas,
-  devicePixelRatio: window.devicePixelRatio,
-  options: { series: [] }
-};
-
-worker.postMessage(msg, getTransferables(msg));
-```
+**Usage:** Call with message before posting: `worker.postMessage(msg, getTransferables(msg))`
 
 **Performance:** Transferring objects is zero-copy and much faster than cloning for large buffers.
 

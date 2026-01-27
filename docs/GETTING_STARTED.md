@@ -369,6 +369,7 @@ Then open `http://localhost:5176/examples/` in your browser.
 
 ### Advanced topics
 
+- **Worker-based rendering**: Use `ChartGPU.createInWorker()` for maximum performance with large datasets (keeps main thread responsive) - see [Worker API](./api/worker.md)
 - **Themes**: Use built-in themes (`theme: 'dark' | 'light'`) or create custom themes
 - **Streaming data**: Use `chart.appendData(seriesIndex, newPoints)` for real-time updates
 - **Zoom & pan**: Enable interactive zoom with `dataZoom: [{ type: 'inside' }]`

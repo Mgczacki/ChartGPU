@@ -5,7 +5,15 @@
 export const version = '1.0.0';
 
 // Chart API (Phase 1)
-export { ChartGPU } from './ChartGPU';
+import { ChartGPU as ChartGPUNamespace } from './ChartGPU';
+import { createChartInWorker } from './worker/createChartInWorker';
+
+// Export ChartGPU namespace with both create and createInWorker
+export const ChartGPU = {
+  ...ChartGPUNamespace,
+  createInWorker: createChartInWorker,
+};
+
 export { createChartGPU as createChart } from './ChartGPU';
 export type { ChartGPUInstance } from './ChartGPU';
 export type {
@@ -113,3 +121,37 @@ export type { RenderCoordinatorCallbacks } from './core/createRenderCoordinator'
 
 // Class-based API (for backward compatibility)
 export { RenderScheduler } from './core/RenderScheduler';
+
+// Worker API - Main thread proxy and types
+export { ChartGPUWorkerProxy } from './worker/ChartGPUWorkerProxy';
+export { ChartGPUWorkerError } from './worker/types';
+export type { WorkerConfig, PendingRequest } from './worker/types';
+
+// Worker protocol types (Main ↔ Worker communication)
+export type {
+  WorkerInboundMessage,
+  WorkerOutboundMessage,
+  InitMessage,
+  SetOptionMessage,
+  AppendDataMessage,
+  AppendDataBatchMessage,
+  ResizeMessage,
+  ForwardPointerEventMessage,
+  SetZoomRangeMessage,
+  SetInteractionXMessage,
+  SetAnimationMessage,
+  DisposeMessage,
+  ReadyMessage,
+  RenderedMessage,
+  TooltipUpdateMessage,
+  LegendUpdateMessage,
+  AxisLabelsUpdateMessage,
+  WorkerEventPayload,
+  HoverChangeMessage,
+  ClickMessage,
+  CrosshairMoveMessage,
+  ZoomChangeMessage,
+  DeviceLostMessage,
+  DisposedMessage,
+  ErrorMessage,
+} from './worker/protocol';

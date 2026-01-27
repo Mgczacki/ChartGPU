@@ -78,6 +78,15 @@ export { getTransferables } from './protocol';
 export { ChartGPUWorkerController } from './ChartGPUWorkerController';
 
 // =============================================================================
+// Worker Proxy (Main Thread)
+// =============================================================================
+
+export { ChartGPUWorkerProxy } from './ChartGPUWorkerProxy';
+export { createChartInWorker } from './createChartInWorker';
+export type { WorkerConfig, PendingRequest } from './types';
+export { ChartGPUWorkerError } from './types';
+
+// =============================================================================
 // Re-exported Types from Main Library
 // =============================================================================
 

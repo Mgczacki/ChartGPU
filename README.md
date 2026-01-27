@@ -29,6 +29,7 @@ ChartGPU is a TypeScript charting library built on WebGPU for smooth, interactiv
 ## Highlights
 
 - 🚀 WebGPU-accelerated rendering for high FPS with large datasets
+- ⚡ Worker-based rendering with OffscreenCanvas (optional - for maximum performance)
 - 📈 Multiple series types: line, area, bar, scatter, pie, candlestick
 - 🧭 Built-in interaction: hover highlight, tooltip, crosshair
 - 🔁 Streaming updates via `appendData(...)` (cartesian series)
@@ -92,21 +93,39 @@ flowchart TB
   end
 
   subgraph WorkerThread["⚡ WORKER THREAD RENDERING (Optional - src/worker/)"]
-    subgraph WorkerInbound["Main → Worker (src/worker/protocol.ts)"]
-      MainAPI["ChartGPU.createWorker(...)"] -->|"postMessage: init"| WorkerInit["InitMessage + OffscreenCanvas transfer"]
-      MainAPI -->|"postMessage: setOption"| WorkerSetOpt["SetOptionMessage"]
-      MainAPI -->|"postMessage: appendData"| WorkerAppend["AppendDataMessage + ArrayBuffer transfer"]
-      MainAPI -->|"postMessage: resize"| WorkerResize["ResizeMessage"]
-      MainAPI -->|"postMessage: forwardPointerEvent"| WorkerPointer["ForwardPointerEventMessage"]
-      MainAPI -->|"postMessage: setZoomRange"| WorkerZoom["SetZoomRangeMessage"]
-      MainAPI -->|"postMessage: setInteractionX"| WorkerInteractionX["SetInteractionXMessage"]
-      MainAPI -->|"postMessage: dispose"| WorkerDispose["DisposeMessage"]
+    subgraph WorkerProxyAPI["Worker Proxy API (src/worker/)"]
+      CreateInWorker["createChartInWorker(container, options)<br/>ChartGPU.createInWorker(container, options)"]
+      CreateInWorker --> ProxyInit["ChartGPUWorkerProxy initialization"]
+      ProxyInit --> CanvasTransfer["canvas.transferControlToOffscreen()"]
+      ProxyInit --> WorkerCreate["Create Worker (built-in or custom)"]
     end
 
-    subgraph WorkerCore["Worker context (src/worker/index.ts)"]
+    subgraph MainThreadProxy["Main Thread: ChartGPUWorkerProxy (src/worker/ChartGPUWorkerProxy.ts)"]
+      ProxyInit --> ProxyInstance["ChartGPUWorkerProxy implements ChartGPUInstance"]
+      ProxyInstance --> ProxyState["Local state cache<br/>(options, interactionX, zoomRange)"]
+      ProxyInstance --> EventForwarding["Event forwarding to worker<br/>(pointerdown/move/up/leave/wheel)"]
+      ProxyInstance --> ProxyOverlays["DOM overlay management<br/>(tooltip, legend, text, slider)"]
+      ProxyInstance --> ResizeMonitoring["ResizeObserver + DPR monitoring<br/>(RAF batched)"]
+      
+      EventForwarding --> ForwardPointer["Serialize PointerEvent → PointerEventData"]
+      ResizeMonitoring --> ResizeRAF["RAF-batched resize messages"]
+    end
+
+    subgraph WorkerInbound["Main → Worker (src/worker/protocol.ts)"]
+      CanvasTransfer -->|"postMessage: init"| WorkerInit["InitMessage + OffscreenCanvas transfer"]
+      ProxyInstance -->|"postMessage: setOption"| WorkerSetOpt["SetOptionMessage"]
+      ProxyInstance -->|"postMessage: appendData"| WorkerAppend["AppendDataMessage + ArrayBuffer transfer"]
+      ResizeRAF -->|"postMessage: resize"| WorkerResize["ResizeMessage"]
+      ForwardPointer -->|"postMessage: forwardPointerEvent"| WorkerPointer["ForwardPointerEventMessage"]
+      ProxyInstance -->|"postMessage: setZoomRange"| WorkerZoom["SetZoomRangeMessage"]
+      ProxyInstance -->|"postMessage: setInteractionX"| WorkerInteractionX["SetInteractionXMessage"]
+      ProxyInstance -->|"postMessage: dispose"| WorkerDispose["DisposeMessage"]
+    end
+
+    subgraph WorkerCore["Worker Thread: ChartGPUWorkerController (src/worker/ChartGPUWorkerController.ts)"]
       WorkerInit --> WGPUInit["GPUContext.create(offscreenCanvas)"]
       WGPUInit --> WCoordinator["createRenderCoordinator(gpuContext, options)"]
-      WCoordinator --> WRenderLoop["requestAnimationFrame loop"]
+      WCoordinator --> WRenderLoop["MessageChannel render loop"]
       WorkerSetOpt --> WCoordinator
       WorkerAppend --> WDataStore["Worker DataStore (GPU buffer upload)"]
       WorkerResize --> WCoordinator
@@ -131,15 +150,19 @@ flowchart TB
       WCoordinator -->|"error"| ErrorMsg["ErrorMessage"]
     end
 
-    subgraph MainThreadDOM["Main thread receives & renders DOM overlays"]
-      ReadyMsg --> DOMReady["Chart ready event"]
-      TooltipMsg --> DOMTooltip["Update tooltip DOM"]
-      LegendMsg --> DOMLegend["Update legend DOM"]
-      AxisMsg --> DOMAxis["Update axis labels DOM"]
-      HoverMsg --> DOMHover["Emit hover event"]
-      ClickMsg --> DOMClick["Emit click event"]
-      CrosshairMsg --> DOMCrosshair["Update crosshair display"]
-      ZoomMsg --> DOMZoom["Emit zoom event"]
+    subgraph MainThreadDOM["Main Thread: DOM Overlay Rendering (ChartGPUWorkerProxy)"]
+      ReadyMsg --> ProxyOverlays
+      TooltipMsg --> DOMTooltip["RAF-batched tooltip.show(x, y, content)"]
+      LegendMsg --> DOMLegend["RAF-batched legend.update(items, theme)"]
+      AxisMsg --> DOMAxis["RAF-batched textOverlay.addLabel(...)"]
+      HoverMsg --> DOMHover["Re-emit 'mouseover'/'mouseout' events"]
+      ClickMsg --> DOMClick["Re-emit 'click' event"]
+      CrosshairMsg --> DOMCrosshair["Update cached interactionX + emit"]
+      ZoomMsg --> DOMZoom["Update cached zoomRange + zoomState"]
+      
+      ProxyOverlays --> DOMTooltip
+      ProxyOverlays --> DOMLegend
+      ProxyOverlays --> DOMAxis
     end
   end
 
@@ -199,6 +222,27 @@ await ChartGPU.create(container, {
   series: [{ type: 'line', data: [[0, 1], [1, 3], [2, 2]] }],
 });
 ```
+
+### Worker-based rendering (optional)
+
+For maximum performance with large datasets, use worker-based rendering to keep the main thread responsive:
+
+```ts
+import { ChartGPU } from 'chartgpu';
+const container = document.getElementById('chart')!;
+// Identical API, but rendering happens in a Web Worker
+await ChartGPU.createInWorker(container, {
+  series: [{ type: 'line', data: [[0, 1], [1, 3], [2, 2]] }],
+});
+```
+
+**When to use workers:**
+- Large datasets (>10K points) with frequent updates
+- Real-time streaming data
+- Complex multi-series charts
+- Mobile/low-power devices
+
+See [Worker API Documentation](https://github.com/hunterg325/ChartGPU/blob/main/docs/api/worker.md) for details.
 
 ## Installation
 
