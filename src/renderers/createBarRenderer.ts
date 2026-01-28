@@ -32,7 +32,7 @@ export interface BarRendererOptions {
 type Rgba = readonly [r: number, g: number, b: number, a: number];
 
 const DEFAULT_TARGET_FORMAT: GPUTextureFormat = 'bgra8unorm';
-const DEFAULT_BAR_GAP = 0.1;
+const DEFAULT_BAR_GAP = 0.01; // Minimal gap between bars within a group (was 0.1)
 const DEFAULT_BAR_CATEGORY_GAP = 0.2;
 const INSTANCE_STRIDE_BYTES = 32; // rect vec4 + color vec4
 const INSTANCE_STRIDE_FLOATS = INSTANCE_STRIDE_BYTES / 4;
@@ -335,20 +335,23 @@ export function createBarRenderer(device: GPUDevice, options?: BarRendererOption
     const categoryWidthClip = computeCategoryWidthClip(xScale, categoryStep, plotClipRect, fallbackCategoryCount);
     const categoryInnerWidthClip = Math.max(0, categoryWidthClip * (1 - barCategoryGap));
 
+    const denom = clusterCount + Math.max(0, clusterCount - 1) * barGap;
+    const maxBarWidthClip = denom > 0 ? categoryInnerWidthClip / denom : 0;
+
     let barWidthClip = 0;
     const rawBarWidth = layout.barWidth;
     if (typeof rawBarWidth === 'number') {
       barWidthClip = Math.max(0, rawBarWidth) * clipPerCssX;
+      barWidthClip = Math.min(barWidthClip, maxBarWidthClip);
     } else if (typeof rawBarWidth === 'string') {
       const p = parsePercent(rawBarWidth);
-      barWidthClip = p == null ? 0 : categoryInnerWidthClip * clamp01(p);
+      barWidthClip = p == null ? 0 : maxBarWidthClip * clamp01(p);
     }
 
     if (!(barWidthClip > 0)) {
-      const denom = clusterCount + Math.max(0, clusterCount - 1) * barGap;
-      barWidthClip = denom > 0 ? categoryInnerWidthClip / denom : 0;
+      // Auto-width: max per-bar width that still avoids overlap (given clusterCount and barGap).
+      barWidthClip = maxBarWidthClip;
     }
-    barWidthClip = Math.min(barWidthClip, categoryInnerWidthClip);
 
     const gapClip = barWidthClip * barGap;
     const clusterWidthClip = clusterCount * barWidthClip + Math.max(0, clusterCount - 1) * gapClip;

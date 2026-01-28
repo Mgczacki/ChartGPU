@@ -3487,7 +3487,12 @@ export function createRenderCoordinator(
         }
       }
     }
-    barRenderer.render(pass);
+    // Clip bars to the plot grid (mirrors area/line scissor usage).
+    if (plotScissor.w > 0 && plotScissor.h > 0) {
+      pass.setScissorRect(plotScissor.x, plotScissor.y, plotScissor.w, plotScissor.h);
+      barRenderer.render(pass);
+      pass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
+    }
     for (let i = 0; i < seriesForRender.length; i++) {
       if (seriesForRender[i].type === 'candlestick') {
         candlestickRenderers[i].render(pass);

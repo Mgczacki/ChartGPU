@@ -45,7 +45,8 @@ async function main() {
         color: '#4a9eff',
         stack: 's1',
         barWidth: '70%',
-        barGap: 0.25,
+        // Bars within a group: set near-zero gap for a flush look.
+        barGap: 0.01,
         barCategoryGap: 0.35,
       },
       {

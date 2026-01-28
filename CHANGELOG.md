@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **Scissor rect clipping during zoom** - Fixed visual bug where chart data extended past axis boundaries during zoom interactions. Scissor rects are now applied consistently to line and area renderers during all rendering operations, not just intro animations.
+- **Grouped bar layout** - Fixed grouped/clustered bar rendering so bars stay clipped to the plot grid and do not overlap within a category. Also tightened the default intra-group spacing (`barGap`) for a more “flush” grouped look (see `examples/grouped-bar`).
 
 ### Security
 

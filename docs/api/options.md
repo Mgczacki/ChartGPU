@@ -58,12 +58,17 @@ Extends the shared series fields with `type: 'area'`, optional `baseline?: numbe
 
 Extends the shared series fields with `type: 'bar'` and bar-specific layout/styling. See [`types.ts`](../../src/config/types.ts).
 
-- **`barWidth?: number | string`**: bar width in CSS pixels or as a percentage string (relative to the category width).
-- **`barGap?: number`**: gap between bars in the same category (ratio in \([0, 1]\)).
-- **`barCategoryGap?: number`**: gap between categories (ratio in \([0, 1]\)).
+- **`barWidth?: number | string`**: bar width in CSS pixels (number) or as a percentage string.
+  - When `barWidth` is a percentage string (e.g. `'80%'`), it is interpreted as a percentage of the **maximum per-bar width that still avoids overlap within a category**, given the current `clusterCount` (derived from `stack`) and `barGap`.
+    - `'100%'` equals the default “auto” width (the max non-overlap width).
+    - Values are clamped to \([0, 100]\)%, and the resulting layout guarantees `clusterWidth <= categoryInnerWidth` (no intra-category overlap).
+  - When `barWidth` is a number (CSS px), it is clamped to the same maximum non-overlap per-bar width.
+  - When omitted, ChartGPU uses the same “auto” width (max non-overlap) behavior.
+- **`barGap?: number`**: gap between bars in the same category/group (ratio in \([0, 1]\)). Default: `0.01` (minimal gap). To make grouped bars flush (no gap between bars within a group), set `barGap` to `0` or a value near `0`. See [`createBarRenderer.ts`](../../src/renderers/createBarRenderer.ts).
+- **`barCategoryGap?: number`**: gap between categories (ratio in \([0, 1]\)). Default: `0.2`. See [`createBarRenderer.ts`](../../src/renderers/createBarRenderer.ts).
 - **`stack?: string`**: stack group id (bars with the same id may be stacked).
 - **`itemStyle?: BarItemStyleConfig`**: per-bar styling.
-- **Rendering (current)**: bar series render as clustered bars per x-category via an instanced draw path. If multiple bar series share the same **non-empty** `stack` id, they render as stacked segments within the same cluster slot (positive values stack upward from the baseline; negative values stack downward). See [`createBarRenderer.ts`](../../src/renderers/createBarRenderer.ts), shader source [`bar.wgsl`](../../src/shaders/bar.wgsl), and coordinator wiring in [`createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts). For an example, see [`examples/grouped-bar/`](../../examples/grouped-bar/).
+- **Rendering (current)**: bar series render as clustered bars per x-category via an instanced draw path. If multiple bar series share the same **non-empty** `stack` id, they render as stacked segments within the same cluster slot (positive values stack upward from the baseline; negative values stack downward). Bars are clipped to the plot grid (scissor) so they do not render into the chart margins. See [`createBarRenderer.ts`](../../src/renderers/createBarRenderer.ts), shader source [`bar.wgsl`](../../src/shaders/bar.wgsl), and coordinator wiring in [`createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts). For an example, see [`examples/grouped-bar/`](../../examples/grouped-bar/).
   - Note: y-axis auto bounds are currently derived from raw series y-values (not stacked totals). If stacked bars clip, set `yAxis.min` / `yAxis.max`.
 
 ### ScatterSeriesConfig

@@ -7,7 +7,7 @@ import type {
 import type { LinearScale } from '../utils/scales';
 
 const DEFAULT_MAX_DISTANCE_PX = 20;
-const DEFAULT_BAR_GAP = 0.1;
+const DEFAULT_BAR_GAP = 0.01; // Minimal gap between bars within a group (was 0.1)
 const DEFAULT_BAR_CATEGORY_GAP = 0.2;
 const DEFAULT_SCATTER_RADIUS_CSS_PX = 4;
 
@@ -298,22 +298,24 @@ export function computeBarLayoutPx(
   const barCategoryGap = clamp01(layout.barCategoryGap ?? DEFAULT_BAR_CATEGORY_GAP);
 
   const categoryInnerWidthPx = Math.max(0, categoryWidthPx * (1 - barCategoryGap));
+  const denom = clusterCount + Math.max(0, clusterCount - 1) * barGap;
+  const maxBarWidthPx = denom > 0 ? categoryInnerWidthPx / denom : 0;
 
   let barWidthPx = 0;
   const rawBarWidth = layout.barWidth;
   if (typeof rawBarWidth === 'number') {
     barWidthPx = Math.max(0, rawBarWidth);
+    barWidthPx = Math.min(barWidthPx, maxBarWidthPx);
   } else if (typeof rawBarWidth === 'string') {
     const p = parsePercent(rawBarWidth);
-    barWidthPx = p == null ? 0 : categoryInnerWidthPx * clamp01(p);
+    barWidthPx = p == null ? 0 : maxBarWidthPx * clamp01(p);
   }
 
   if (!(barWidthPx > 0)) {
-    const denom = clusterCount + Math.max(0, clusterCount - 1) * barGap;
-    barWidthPx = denom > 0 ? categoryInnerWidthPx / denom : 0;
+    // Auto-width: max per-bar width that still avoids overlap (given clusterCount and barGap).
+    barWidthPx = maxBarWidthPx;
   }
 
-  barWidthPx = Math.min(barWidthPx, categoryInnerWidthPx);
   const gapPx = barWidthPx * barGap;
   const clusterWidthPx = clusterCount * barWidthPx + Math.max(0, clusterCount - 1) * gapPx;
 
