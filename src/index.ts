@@ -43,6 +43,7 @@ export type {
   LineSeriesConfig,
   BarSeriesConfig,
   NormalizedPointerEvent,
+  PerformanceMetrics,
   PointerEventData,
   OHLCDataPoint,
   PieCenter,

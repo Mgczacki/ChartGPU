@@ -157,7 +157,7 @@ flowchart TB
       PerfMsg --> PerfUpdate["Cache PerformanceMetrics + notify callbacks"]
       TooltipMsg --> DOMTooltip["RAF-batched tooltip.show(x, y, content)<br/>(receives complete tooltip data from worker)"]
       LegendMsg --> DOMLegend["RAF-batched legend.update(items, theme)"]
-      AxisMsg --> DOMAxis["RAF-batched textOverlay.addLabel(...)"]
+      AxisMsg --> DOMAxis["RAF-batched textOverlay.addLabel(...)<br/>(auto-handles container overflow)"]
       HoverMsg --> DOMHover["Re-emit 'mouseover'/'mouseout' events"]
       ClickMsg --> DOMClick["Re-emit 'click' event"]
       CrosshairMsg --> DOMCrosshair["Update cached interactionX + emit"]

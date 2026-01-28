@@ -124,6 +124,7 @@ An internal DOM helper for rendering text labels above the canvas using an absol
   - `dispose(): void`
 - **Coordinates**: `x` / `y` are in CSS pixels relative to the container's top-left corner.
 - **Pointer events**: the overlay uses `pointer-events: none` so it won't intercept mouse/touch input.
+- **Container overflow handling**: automatically detects if the container has `overflow: hidden`, `scroll`, or `auto`, and temporarily sets it to `visible` while the overlay is active. This prevents axis labels from being clipped by the container boundary. Original overflow values are restored when `dispose()` is called. This ensures labels can extend beyond canvas boundaries as needed.
 - **Current usage**: used by the render coordinator to render numeric cartesian axis tick value labels above the canvas (pie-only charts skip these labels). See [`createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts).
 
 ## Legend (internal / contributor notes)

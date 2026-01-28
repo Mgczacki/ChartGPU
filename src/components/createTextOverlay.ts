@@ -35,12 +35,22 @@ const getAnchorTransform = (
 };
 
 export function createTextOverlay(container: HTMLElement): TextOverlay {
-  const computedPosition = getComputedStyle(container).position;
+  const computedStyle = getComputedStyle(container);
+  const computedPosition = computedStyle.position;
+  const computedOverflow = computedStyle.overflow;
+
   const didSetRelative = computedPosition === 'static';
+  const didSetOverflowVisible = computedOverflow === 'hidden' || computedOverflow === 'scroll' || computedOverflow === 'auto';
+
   const previousInlinePosition = didSetRelative ? container.style.position : null;
+  const previousInlineOverflow = didSetOverflowVisible ? container.style.overflow : null;
 
   if (didSetRelative) {
     container.style.position = 'relative';
+  }
+
+  if (didSetOverflowVisible) {
+    container.style.overflow = 'visible';
   }
 
   const overlay = document.createElement('div');
@@ -96,6 +106,9 @@ export function createTextOverlay(container: HTMLElement): TextOverlay {
     } finally {
       if (previousInlinePosition !== null) {
         container.style.position = previousInlinePosition;
+      }
+      if (previousInlineOverflow !== null) {
+        container.style.overflow = previousInlineOverflow;
       }
     }
   };

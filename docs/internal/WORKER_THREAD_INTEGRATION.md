@@ -619,6 +619,10 @@ canvas.addEventListener('pointermove', (e) => {
 
 ### Troubleshooting
 
+**Issue:** Axis labels are clipped or hidden.
+
+**Solution:** Axis label clipping is automatically handled by `createTextOverlay`. The text overlay component detects when the container has `overflow: hidden`, `scroll`, or `auto`, and automatically sets it to `visible` while the overlay is active. Original overflow values are restored on cleanup. Labels can now safely extend beyond canvas boundaries without being clipped. No user configuration needed.
+
 **Issue:** Tooltips don't appear in worker mode.
 
 **Diagnosis:**

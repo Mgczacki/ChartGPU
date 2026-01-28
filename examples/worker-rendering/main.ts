@@ -13,7 +13,7 @@
  * - Streaming mode with rate control
  */
 
-import { ChartGPU, packDataPoints, packOHLCDataPoints } from '../../src/index';
+import { ChartGPU } from '../../src/index';
 import type { 
   ChartGPUInstance, 
   ChartGPUOptions, 
@@ -290,7 +290,8 @@ async function generateData(
     }
   }
   
-  return chunks.flat();
+  // Type assertion is safe because all chunks are guaranteed to be the same type
+  return chunks.flat() as DataPoint[] | OHLCDataPoint[];
 }
 
 function generateChunk(
@@ -644,13 +645,7 @@ async function handleStartStreaming(): Promise<void> {
     nextX += streamRate;
 
     // Append to chart
-    if (dataType === 'candlestick') {
-      const packed = packOHLCDataPoints(batch as OHLCDataPoint[]);
-      state.chart.appendData(0, packed, 'ohlc');
-    } else {
-      const packed = packDataPoints(batch as DataPoint[]);
-      state.chart.appendData(0, packed, 'xy');
-    }
+    state.chart.appendData(0, batch);
 
     state.totalPointsGenerated += streamRate;
     
