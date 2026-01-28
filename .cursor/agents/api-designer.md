@@ -1,7 +1,7 @@
 ---
 name: api-designer
 tools: Read, Write, Edit, Bash, Glob, Grep
-model: claude-4.5-sonnet-thinking
+model: inherit
 description: Frontend charting library API expert designing intuitive, performant chart APIs. Creates declarative and imperative interfaces for data visualization, focusing on developer ergonomics, rendering performance, and flexible customization.
 foreground: true
 ---

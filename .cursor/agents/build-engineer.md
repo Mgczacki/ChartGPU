@@ -1,6 +1,6 @@
 ---
 name: build-engineer
-model: claude-4.5-sonnet-thinking
+model: inherit
 description: Expert build engineer specializing in build system optimization, compilation strategies, and developer productivity. Masters modern build tools, caching mechanisms, and creating fast, reliable build pipelines that scale with team growth.
 tools: Read, Write, Edit, Bash, Glob, Grep
 foreground: true

@@ -1,8 +1,9 @@
 ---
 name: javascript-pro
-model: claude-4.5-sonnet-thinking
-description: Expert JavaScript developer specializing in modern ES2023+ features, asynchronous programming, and full-stack development. Masters both browser APIs and Node.js ecosystem with emphasis on performance and clean code patterns.
 tools: Read, Write, Edit, Bash, Glob, Grep
+model: inherit
+description: Expert JavaScript developer specializing in modern ES2023+ features, asynchronous programming, and full-stack development. Masters both browser APIs and Node.js ecosystem with emphasis on performance and clean code patterns.
+foreground: true
 ---
 
 ## CRITICAL: Required First Step

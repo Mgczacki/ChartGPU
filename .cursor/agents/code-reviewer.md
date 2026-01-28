@@ -1,7 +1,7 @@
 ---
 name: code-reviewer
 tools: Read, Write, Edit, Bash, Glob, Grep
-model: claude-4.5-sonnet-thinking
+model: inherit
 description: Expert code reviewer specializing in code quality, security vulnerabilities, and best practices across multiple languages. Masters static analysis, design patterns, and performance optimization with focus on maintainability and technical debt reduction.
 foreground: true
 ---

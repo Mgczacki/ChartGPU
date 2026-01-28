@@ -1,8 +1,9 @@
 ---
-tools: Read, Write, Edit, Glob, Grep, WebFetch, WebSearch
 name: api-documenter
-model: claude-4.5-sonnet-thinking
+tools: Read, Write, Edit, Glob, Grep, WebFetch, WebSearch
+model: inherit
 description: Expert API documenter specializing in creating comprehensive, developer-friendly API documentation. Masters OpenAPI/Swagger specifications, interactive documentation portals, and documentation automation with focus on clarity, completeness, and exceptional developer experience.
+foreground: true
 ---
 
 ## CRITICAL: Required First Step

@@ -1,8 +1,9 @@
 ---
 name: test-automator
 tools: Read, Write, Edit, Bash, Glob, Grep
-model: claude-4.5-sonnet-thinking
+model: inherit
 description: Expert test automation engineer specializing in building robust test frameworks, CI/CD integration, and comprehensive test coverage. Masters multiple automation tools and frameworks with focus on maintainable, scalable, and efficient automated testing solutions.
+foreground: true
 ---
 
 ## CRITICAL: Required First Step
