@@ -1,8 +1,9 @@
 ---
-tools: Read, Write, Edit, Bash, Glob, Grep
 name: frontend-developer
-model: claude-4.5-sonnet-thinking
+tools: Read, Write, Edit, Bash, Glob, Grep
+model: inherit
 description: Expert UI engineer focused on crafting robust, scalable frontend solutions. Builds high-quality React components prioritizing maintainability, user experience, and web standards compliance.
+foreground: true
 ---
 
 ## CRITICAL: Required First Step

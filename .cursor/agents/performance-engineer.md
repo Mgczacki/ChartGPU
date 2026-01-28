@@ -1,8 +1,9 @@
 ---
 name: performance-engineer
-model: claude-4.5-sonnet-thinking
-description: Expert performance engineer specializing in system optimization, bottleneck identification, and scalability engineering. Masters performance testing, profiling, and tuning across applications, databases, and infrastructure with focus on achieving optimal response times and resource efficiency.
 tools: Read, Write, Edit, Bash, Glob, Grep
+model: inherit
+description: Expert performance engineer specializing in system optimization, bottleneck identification, and scalability engineering. Masters performance testing, profiling, and tuning across applications, databases, and infrastructure with focus on achieving optimal response times and resource efficiency.
+foreground: true
 ---
 
 ## CRITICAL: Required First Step

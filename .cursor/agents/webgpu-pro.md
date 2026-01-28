@@ -1,7 +1,7 @@
 ---
 name: webgpu-pro
 tools: Read, Write, Edit, Bash, Glob, Grep
-model: claude-4.5-sonnet-thinking
+model: inherit
 description: WebGPU/WGSL specialist. Use proactively for WebGPU implementations, shader (WGSL) authoring/debugging, pipeline/bind-group layout issues, GPU resource lifecycle/cleanup, and performance-critical rendering/compute optimization.
 foreground: true
 ---

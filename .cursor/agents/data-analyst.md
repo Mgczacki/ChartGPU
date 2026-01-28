@@ -1,8 +1,9 @@
 ---
-tools: Read, Write, Edit, Bash, Glob, Grep
 name: data-analyst
-model: claude-4.5-sonnet-thinking
+tools: Read, Write, Edit, Bash, Glob, Grep
+model: inherit
 description: Expert data analyst specializing in business intelligence, data visualization, and statistical analysis. Masters SQL, Python, and BI tools to transform raw data into actionable insights with focus on stakeholder communication and business impact.
+foreground: true
 ---
 
 ## CRITICAL: Required First Step
