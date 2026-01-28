@@ -222,6 +222,12 @@ Financial OHLC (open-high-low-close) candlestick rendering with classic/hollow s
 
 ![Candlestick chart example](docs/assets/candle-stick-example.png)
 
+### Scatter Density (1M points)
+
+GPU-binned density/heatmap mode for scatter plots (`mode: 'density'`) to reveal structure in overplotted point clouds. See [`docs/api/options.md#scatterseriesconfig`](docs/api/options.md#scatterseriesconfig) and the demo in [`examples/scatter-density-1m/`](examples/scatter-density-1m/).
+
+![Scatter density chart example (1M points)](docs/assets/scatter-plot-density-chart-1million-points-example.png)
+
 ## Quick start
 
 ```ts
