@@ -6,16 +6,17 @@
   High-performance charts powered by WebGPU
 </p>
 
+<div align="center">
 
-<p align="center">
-  <a href="https://github.com/hunterg325/ChartGPU/blob/main/docs/GETTING_STARTED.md">Documentation</a> |
-  <a href="https://github.com/hunterg325/ChartGPU/tree/main/examples">Examples</a>
-</p>
+[![Examples](https://img.shields.io/badge/Examples-Code%20Samples-blue?style=for-the-badge)](https://github.com/hunterg325/ChartGPU/tree/main/examples)
+
+[![Documentation](https://img.shields.io/badge/Documentation-Getting%20Started-blue?style=for-the-badge)](https://github.com/hunterg325/ChartGPU/blob/main/docs/GETTING_STARTED.md)
 
 [![npm version](https://img.shields.io/npm/v/chartgpu?style=for-the-badge&color=blue)](https://www.npmjs.com/package/chartgpu)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://github.com/hunterg325/ChartGPU/blob/main/LICENSE)
 [![Live Demo](https://img.shields.io/badge/demo-live-brightgreen?style=for-the-badge)](https://chartgpu.github.io/ChartGPU/)
 
+</div>
 
 
 ChartGPU is a TypeScript charting library built on WebGPU for smooth, interactive rendering—especially when you have lots of data.
