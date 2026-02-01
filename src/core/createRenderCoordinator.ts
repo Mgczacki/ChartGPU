@@ -5,7 +5,21 @@ import type {
   ResolvedChartGPUOptions,
   ResolvedPieSeriesConfig,
 } from '../config/OptionResolver';
-import type { AnimationConfig, AxisLabel, DataPoint, DataPointTuple, LegendItem, PointerEventData, OHLCDataPoint, OHLCDataPointTuple, PieCenter, PieRadius, TooltipData } from '../config/types';
+import type {
+  AnimationConfig,
+  AnnotationConfig,
+  AnnotationLabelData,
+  AxisLabel,
+  DataPoint,
+  DataPointTuple,
+  LegendItem,
+  PointerEventData,
+  OHLCDataPoint,
+  OHLCDataPointTuple,
+  PieCenter,
+  PieRadius,
+  TooltipData,
+} from '../config/types';
 import type { SupportedCanvas } from './GPUContext';
 import { isHTMLCanvasElement as isHTMLCanvasElementGPU } from './GPUContext';
 import { createDataStore } from '../data/createDataStore';
@@ -25,6 +39,11 @@ import { createCrosshairRenderer } from '../renderers/createCrosshairRenderer';
 import type { CrosshairRenderOptions } from '../renderers/createCrosshairRenderer';
 import { createHighlightRenderer } from '../renderers/createHighlightRenderer';
 import type { HighlightPoint } from '../renderers/createHighlightRenderer';
+import { createRenderPipeline } from '../renderers/rendererUtils';
+import { createReferenceLineRenderer } from '../renderers/createReferenceLineRenderer';
+import type { ReferenceLineInstance } from '../renderers/createReferenceLineRenderer';
+import { createAnnotationMarkerRenderer } from '../renderers/createAnnotationMarkerRenderer';
+import type { AnnotationMarkerInstance } from '../renderers/createAnnotationMarkerRenderer';
 import { createEventManager } from '../interaction/createEventManager';
 import type { ChartGPUEventPayload } from '../interaction/createEventManager';
 import { createInsideZoom } from '../interaction/createInsideZoom';
@@ -88,6 +107,28 @@ function getCanvasCssHeight(canvas: SupportedCanvas | null, devicePixelRatio: nu
   }
   // OffscreenCanvas: height property is in device pixels. Convert to CSS pixels by dividing by DPR.
   return canvas.height / devicePixelRatio;
+}
+
+/**
+ * Gets canvas CSS size derived strictly from device-pixel dimensions and DPR.
+ *
+ * This is intentionally different from `getCanvasCssWidth/Height(...)`:
+ * - HTMLCanvasElement: `clientWidth/clientHeight` reflect DOM layout and can diverge (rounding, zoom, async resize)
+ *   from the WebGPU render target size (`canvas.width/height` in device pixels).
+ * - For GPU overlays that round-trip CSS↔device pixels in-shader, we must derive CSS size from
+ *   `canvas.width/height` + DPR to keep transforms consistent with the render target.
+ *
+ * NOTE: Use this for GPU overlay coordinate conversion only (reference lines, markers).
+ * Keep DOM overlays (labels/tooltips) using `clientWidth/clientHeight` for layout correctness.
+ */
+function getCanvasCssSizeFromDevicePixels(
+  canvas: SupportedCanvas | null,
+  devicePixelRatio: number
+): Readonly<{ width: number; height: number }> {
+  if (!canvas) return { width: 0, height: 0 };
+  const dpr = Number.isFinite(devicePixelRatio) && devicePixelRatio > 0 ? devicePixelRatio : 1;
+  // Both HTMLCanvasElement and OffscreenCanvas expose `.width/.height` in device pixels.
+  return { width: canvas.width / dpr, height: canvas.height / dpr };
 }
 
 export interface RenderCoordinator {
@@ -168,6 +209,12 @@ export type RenderCoordinatorCallbacks = Readonly<{
    * Called when axis labels change (only when domOverlays is false).
    */
   readonly onAxisLabelsUpdate?: (xLabels: ReadonlyArray<AxisLabel>, yLabels: ReadonlyArray<AxisLabel>) => void;
+  /**
+   * Called when annotation labels change (only when domOverlays is false).
+   *
+   * Payload coordinates are canvas-local CSS pixels.
+   */
+  readonly onAnnotationsUpdate?: (labels: ReadonlyArray<AnnotationLabelData>) => void;
   /**
    * Called when hover state changes (only when domOverlays is false).
    */
@@ -1149,13 +1196,91 @@ const computeBaseXDomain = (
   return normalizeDomain(baseMin, baseMax);
 };
 
+/**
+ * Computes Y-axis domain bounds from the visible/rendered series data.
+ * This avoids scanning the full raw dataset when yAxis.autoBounds === 'visible'.
+ * 
+ * Performance: O(n) where n = total points across all visible series data.
+ * This is called only when renderSeries changes (zoom/pan/data updates), not per-frame.
+ */
+const computeVisibleYBounds = (series: ResolvedChartGPUOptions['series']): Bounds => {
+  let yMin = Number.POSITIVE_INFINITY;
+  let yMax = Number.NEGATIVE_INFINITY;
+
+  for (let s = 0; s < series.length; s++) {
+    const seriesConfig = series[s];
+    // Pie series are non-cartesian; they don't participate in y bounds.
+    if (seriesConfig.type === 'pie') continue;
+
+    // Candlestick series: scan low/high from visible data
+    if (seriesConfig.type === 'candlestick') {
+      const visibleOHLC = seriesConfig.data as ReadonlyArray<OHLCDataPoint>;
+      for (let i = 0; i < visibleOHLC.length; i++) {
+        const p = visibleOHLC[i]!;
+        const low = isTupleOHLCDataPoint(p) ? p[3] : p.low;
+        const high = isTupleOHLCDataPoint(p) ? p[4] : p.high;
+        if (!Number.isFinite(low) || !Number.isFinite(high)) continue;
+
+        // Use Math.min/max to handle inverted low/high gracefully
+        const yLow = Math.min(low, high);
+        const yHigh = Math.max(low, high);
+
+        if (yLow < yMin) yMin = yLow;
+        if (yHigh > yMax) yMax = yHigh;
+      }
+      continue;
+    }
+
+    // Cartesian series (line, area, bar, scatter): scan y from visible data
+    const data = seriesConfig.data;
+    for (let i = 0; i < data.length; i++) {
+      const { y } = getPointXY(data[i]);
+      if (!Number.isFinite(y)) continue;
+      if (y < yMin) yMin = y;
+      if (y > yMax) yMax = y;
+    }
+  }
+
+  // Fallback for empty/invalid data: return safe default bounds
+  if (!Number.isFinite(yMin) || !Number.isFinite(yMax)) {
+    return { xMin: 0, xMax: 1, yMin: 0, yMax: 1 };
+  }
+
+  // Degenerate domain: add unit span to avoid zero-width range
+  if (yMin === yMax) yMax = yMin + 1;
+
+  return { xMin: 0, xMax: 1, yMin, yMax };
+};
+
 const computeBaseYDomain = (
   options: ResolvedChartGPUOptions,
-  runtimeRawBoundsByIndex?: ReadonlyArray<Bounds | null> | null
+  runtimeRawBoundsByIndex?: ReadonlyArray<Bounds | null> | null,
+  visibleBoundsOverride?: Bounds | null
 ): { readonly min: number; readonly max: number } => {
-  const bounds = computeGlobalBounds(options.series, runtimeRawBoundsByIndex);
-  const yMin = finiteOrUndefined(options.yAxis.min) ?? bounds.yMin;
-  const yMax = finiteOrUndefined(options.yAxis.max) ?? bounds.yMax;
+  // Explicit min/max ALWAYS take precedence over auto-bounds
+  const explicitMin = finiteOrUndefined(options.yAxis.min);
+  const explicitMax = finiteOrUndefined(options.yAxis.max);
+
+  // If both min and max are explicit, use them directly (no auto-bounds needed)
+  if (explicitMin !== undefined && explicitMax !== undefined) {
+    return normalizeDomain(explicitMin, explicitMax);
+  }
+
+  // Determine which bounds to use based on autoBounds mode
+  const autoBoundsMode = options.yAxis.autoBounds ?? 'visible';
+  let bounds: Bounds;
+
+  if (autoBoundsMode === 'visible' && visibleBoundsOverride) {
+    // Use visible bounds from renderSeries (zoom-aware, computed from visible data only)
+    bounds = visibleBoundsOverride;
+  } else {
+    // Use global bounds from full dataset (pre-zoom behavior, computed from all raw data)
+    bounds = computeGlobalBounds(options.series, runtimeRawBoundsByIndex);
+  }
+
+  // Merge explicit bounds with computed bounds (partial override support)
+  const yMin = explicitMin ?? bounds.yMin;
+  const yMax = explicitMax ?? bounds.yMax;
   return normalizeDomain(yMin, yMax);
 };
 
@@ -1375,7 +1500,9 @@ export function createRenderCoordinator(
   // OffscreenCanvas is for rendering only.
   const domOverlaysEnabled = callbacks?.domOverlays !== false;
   const overlayContainer = domOverlaysEnabled && isHTMLCanvasElement(gpuContext.canvas) ? gpuContext.canvas.parentElement : null;
-  const overlay: TextOverlay | null = overlayContainer ? createTextOverlay(overlayContainer) : null;
+  const axisLabelOverlay: TextOverlay | null = overlayContainer ? createTextOverlay(overlayContainer) : null;
+  // Dedicated overlay for annotations (do not reuse axis label overlay).
+  const annotationOverlay: TextOverlay | null = overlayContainer ? createTextOverlay(overlayContainer) : null;
   const legend: Legend | null = overlayContainer ? createLegend(overlayContainer, 'right') : null;
   // Text measurement for axis labels. Only available in DOM contexts (not worker threads).
   const tickMeasureCtx: CanvasRenderingContext2D | null = (() => {
@@ -1435,6 +1562,12 @@ export function createRenderCoordinator(
     updateInterpolationCaches.cartesianDataBySeriesIndex.length = 0;
     updateInterpolationCaches.pieDataBySeriesIndex.length = 0;
   };
+
+  // PERFORMANCE: Reusable arrays for annotation processing (avoid allocations per frame)
+  const annotationLineBelow: ReferenceLineInstance[] = [];
+  const annotationLineAbove: ReferenceLineInstance[] = [];
+  const annotationMarkerBelow: AnnotationMarkerInstance[] = [];
+  const annotationMarkerAbove: AnnotationMarkerInstance[] = [];
 
   const interpolateCartesianSeriesDataByIndex = (
     fromData: ReadonlyArray<DataPoint>,
@@ -1607,6 +1740,27 @@ export function createRenderCoordinator(
   // Derived from `currentOptions.series` (which still includes baseline sampled `data`).
   let renderSeries: ResolvedChartGPUOptions['series'] = currentOptions.series;
 
+  // Cache for visible y-bounds computed from renderSeries (for yAxis.autoBounds === 'visible').
+  // Recomputed whenever renderSeries changes (zoom/pan/data updates).
+  let cachedVisibleYBounds: Bounds | null = null;
+
+  const shouldComputeVisibleYBounds = (opts: ResolvedChartGPUOptions): boolean => {
+    const autoBoundsMode = opts.yAxis.autoBounds ?? 'visible';
+    if (autoBoundsMode !== 'visible') return false;
+    // If both bounds are explicit, auto-bounds (including visible) are never consulted.
+    const explicitMin = finiteOrUndefined(opts.yAxis.min);
+    const explicitMax = finiteOrUndefined(opts.yAxis.max);
+    return !(explicitMin !== undefined && explicitMax !== undefined);
+  };
+
+  const recomputeCachedVisibleYBoundsIfNeeded = (): void => {
+    if (shouldComputeVisibleYBounds(currentOptions)) {
+      cachedVisibleYBounds = computeVisibleYBounds(renderSeries);
+    } else {
+      cachedVisibleYBounds = null;
+    }
+  };
+
   // Cache for sampled data with buffer zones - enables fast slicing during pan without resampling.
   interface SampledDataCache {
     data: ReadonlyArray<DataPoint> | ReadonlyArray<OHLCDataPoint>;
@@ -1624,6 +1778,10 @@ export function createRenderCoordinator(
   // When the debounce fires, we mark resampling "due" and schedule a unified flush.
   let zoomResampleDebounceTimer: number | null = null;
   let zoomResampleDue = false;
+
+  // Zoom changes can fire multiple times per frame; slicing and visible-bounds recompute can be O(n).
+  // Coalesce those updates to at most once per rendered frame.
+  let sliceRenderSeriesDue = false;
 
   // Coalesced streaming appends (flushed at the start of `render()`).
   const pendingAppendByIndex = new Map<number, Array<DataPoint | OHLCDataPoint>>();
@@ -1701,6 +1859,121 @@ export function createRenderCoordinator(
   crosshairRenderer.setVisible(false);
   const highlightRenderer = createHighlightRenderer(device, { targetFormat });
   highlightRenderer.setVisible(false);
+
+  // MSAA for the *annotation overlay* (above-series) pass to reduce shimmer during zoom.
+  // NOTE: In WebGPU, pipeline sampleCount must match the render pass attachment sampleCount.
+  // To keep MSAA scoped, we render the main scene to an offscreen single-sample texture, then:
+  // - MSAA overlay pass: blit main scene into an MSAA target + draw above-series annotations, resolve to swapchain
+  // - Top overlay pass: draw crosshair/axes/highlight (single-sample) on top of the resolved swapchain
+  const ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT = 4;
+
+  const referenceLineRenderer = createReferenceLineRenderer(device, { targetFormat });
+  const annotationMarkerRenderer = createAnnotationMarkerRenderer(device, { targetFormat });
+  const referenceLineRendererMsaa = createReferenceLineRenderer(device, {
+    targetFormat,
+    sampleCount: ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT,
+  });
+  const annotationMarkerRendererMsaa = createAnnotationMarkerRenderer(device, {
+    targetFormat,
+    sampleCount: ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT,
+  });
+
+  // Offscreen main color + MSAA overlay targets (recreated on resize/DPR changes).
+  let mainColorTexture: GPUTexture | null = null;
+  let mainColorView: GPUTextureView | null = null;
+  let overlayMsaaTexture: GPUTexture | null = null;
+  let overlayMsaaView: GPUTextureView | null = null;
+  let overlayTargetsWidth = 0;
+  let overlayTargetsHeight = 0;
+  let overlayTargetsFormat: GPUTextureFormat | null = null;
+
+  const OVERLAY_BLIT_WGSL = `
+struct VSOut { @builtin(position) pos: vec4f };
+
+@vertex
+fn vsMain(@builtin(vertex_index) i: u32) -> VSOut {
+  var positions = array<vec2f, 3>(
+    vec2f(-1.0, -1.0),
+    vec2f( 3.0, -1.0),
+    vec2f(-1.0,  3.0)
+  );
+  var o: VSOut;
+  o.pos = vec4f(positions[i], 0.0, 1.0);
+  return o;
+}
+
+// Using textureLoad (no filtering) for pixel-exact blit into the MSAA overlay pass.
+@group(0) @binding(0) var srcTex: texture_2d<f32>;
+
+@fragment
+fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+  let xy = vec2<i32>(pos.xy);
+  return textureLoad(srcTex, xy, 0);
+}
+`;
+
+  const overlayBlitBindGroupLayout = device.createBindGroupLayout({
+    entries: [{ binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float', viewDimension: '2d' } }],
+  });
+
+  const overlayBlitPipeline = createRenderPipeline(device, {
+    label: 'renderCoordinator/overlayBlitPipeline',
+    bindGroupLayouts: [overlayBlitBindGroupLayout],
+    vertex: { code: OVERLAY_BLIT_WGSL, label: 'renderCoordinator/overlayBlit.wgsl' },
+    fragment: { code: OVERLAY_BLIT_WGSL, label: 'renderCoordinator/overlayBlit.wgsl', formats: targetFormat },
+    primitive: { topology: 'triangle-list', cullMode: 'none' },
+    multisample: { count: ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT },
+  });
+
+  let overlayBlitBindGroup: GPUBindGroup | null = null;
+
+  const destroyTexture = (tex: GPUTexture | null): void => {
+    if (!tex) return;
+    try {
+      tex.destroy();
+    } catch {
+      // best-effort
+    }
+  };
+
+  const ensureOverlayTargets = (canvasWidthDevicePx: number, canvasHeightDevicePx: number): void => {
+    const w = Number.isFinite(canvasWidthDevicePx) ? Math.max(1, Math.floor(canvasWidthDevicePx)) : 1;
+    const h = Number.isFinite(canvasHeightDevicePx) ? Math.max(1, Math.floor(canvasHeightDevicePx)) : 1;
+
+    if (mainColorTexture && overlayMsaaTexture && overlayBlitBindGroup && overlayTargetsWidth === w && overlayTargetsHeight === h && overlayTargetsFormat === targetFormat) {
+      return;
+    }
+
+    destroyTexture(mainColorTexture);
+    destroyTexture(overlayMsaaTexture);
+
+    mainColorTexture = device.createTexture({
+      label: 'renderCoordinator/mainColorTexture',
+      size: { width: w, height: h },
+      format: targetFormat,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    mainColorView = mainColorTexture.createView();
+
+    overlayMsaaTexture = device.createTexture({
+      label: 'renderCoordinator/annotationOverlayMsaaTexture',
+      size: { width: w, height: h },
+      sampleCount: ANNOTATION_OVERLAY_MSAA_SAMPLE_COUNT,
+      format: targetFormat,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+    overlayMsaaView = overlayMsaaTexture.createView();
+
+    overlayBlitBindGroup = device.createBindGroup({
+      label: 'renderCoordinator/overlayBlitBindGroup',
+      layout: overlayBlitBindGroupLayout,
+      entries: [{ binding: 0, resource: mainColorView }],
+    });
+
+    overlayTargetsWidth = w;
+    overlayTargetsHeight = h;
+    overlayTargetsFormat = targetFormat;
+  };
 
   const initialGridArea = computeGridArea(gpuContext, currentOptions);
   
@@ -1922,6 +2195,8 @@ export function createRenderCoordinator(
     const zoomRangeAfter = zoomState?.getRange() ?? null;
     if (zoomRangeAfter == null || isFullSpanZoomRange(zoomRangeAfter)) {
       renderSeries = runtimeBaseSeries;
+      // Recompute visible y-bounds from the baseline series
+      recomputeCachedVisibleYBoundsIfNeeded();
     }
 
     return true;
@@ -1947,6 +2222,8 @@ export function createRenderCoordinator(
 
       if (!zoomRange || zoomIsFullSpan) {
         renderSeries = runtimeBaseSeries;
+        // Recompute visible y-bounds from the baseline series
+        recomputeCachedVisibleYBoundsIfNeeded();
       } else {
         recomputeRenderSeries();
       }
@@ -2354,8 +2631,8 @@ export function createRenderCoordinator(
       zoomState = createZoomState(cfg.start, cfg.end, constraints);
       lastOptionsZoomRange = { start: cfg.start, end: cfg.end };
       unsubscribeZoom = zoomState.onChange((range) => {
-        // Slice cached data immediately for smooth panning
-        sliceRenderSeriesToVisibleRange();
+        // Coalesce slicing (and visible-bounds recompute) to at most once per rendered frame.
+        sliceRenderSeriesDue = true;
         // Immediate render for UI feedback (axes/crosshair/slider).
         requestRender();
         // Debounce resampling; the unified flush will do the work.
@@ -2468,6 +2745,8 @@ export function createRenderCoordinator(
     
     if (isFullSpan) {
       renderSeries = runtimeBaseSeries;
+      // Recompute visible y-bounds from the full baseline series
+      recomputeCachedVisibleYBoundsIfNeeded();
       return;
     }
 
@@ -2518,6 +2797,8 @@ export function createRenderCoordinator(
     }
 
     renderSeries = next;
+    // Recompute visible y-bounds from the sliced renderSeries
+    recomputeCachedVisibleYBoundsIfNeeded();
   }
 
   function recomputeRenderSeries(): void {
@@ -2623,6 +2904,8 @@ export function createRenderCoordinator(
     }
 
     renderSeries = next;
+    // Recompute visible y-bounds from the updated renderSeries
+    recomputeCachedVisibleYBoundsIfNeeded();
   }
 
   initRuntimeSeriesFromOptions();
@@ -2773,7 +3056,7 @@ export function createRenderCoordinator(
 
       const fromXBase = computeBaseXDomain(currentOptions, runtimeRawBoundsByIndex);
       const fromXVisible = computeVisibleXDomain(fromXBase, fromZoomRange);
-      const fromYBase = computeBaseYDomain(currentOptions, runtimeRawBoundsByIndex);
+      const fromYBase = computeBaseYDomain(currentOptions, runtimeRawBoundsByIndex, cachedVisibleYBounds);
       return {
         xBaseDomain: fromXBase,
         xVisibleDomain: { min: fromXVisible.min, max: fromXVisible.max },
@@ -2789,6 +3072,8 @@ export function createRenderCoordinator(
     currentOptions = resolvedOptions;
     runtimeBaseSeries = resolvedOptions.series;
     renderSeries = resolvedOptions.series;
+    // Recompute visible y-bounds from the new series
+    cachedVisibleYBounds = null;
     gpuSeriesKindByIndex = new Array(resolvedOptions.series.length).fill('unknown');
     lastSampledData = new Array(resolvedOptions.series.length).fill(null);
     legend?.update(resolvedOptions.series, resolvedOptions.theme);
@@ -2844,6 +3129,8 @@ export function createRenderCoordinator(
     // If animation is explicitly disabled, ensure any running update transition is stopped.
     if (currentOptions.animation === false) {
       cancelUpdateTransition();
+      // Request a render to reflect the option changes immediately
+      requestRender();
       return;
     }
 
@@ -2851,13 +3138,17 @@ export function createRenderCoordinator(
     const toZoomRange = zoomState?.getRange() ?? null;
     const toXBase = computeBaseXDomain(currentOptions, runtimeRawBoundsByIndex);
     const toXVisible = computeVisibleXDomain(toXBase, toZoomRange);
-    const toYBase = computeBaseYDomain(currentOptions, runtimeRawBoundsByIndex);
+    const toYBase = computeBaseYDomain(currentOptions, runtimeRawBoundsByIndex, cachedVisibleYBounds);
     const toSeriesForTransition = renderSeries;
 
     const domainChanged = !isDomainEqual(fromSnapshot.xBaseDomain, toXBase) || !isDomainEqual(fromSnapshot.yBaseDomain, toYBase);
 
     const shouldAnimateUpdate = hasRenderedOnce && (domainChanged || likelyDataChanged);
-    if (!shouldAnimateUpdate) return;
+    if (!shouldAnimateUpdate) {
+      // Request a render even when not animating (e.g., theme changes, option updates)
+      requestRender();
+      return;
+    }
 
     const updateCfg = resolveUpdateAnimationConfig(currentOptions.animation);
     if (!updateCfg) return;
@@ -2975,6 +3266,11 @@ export function createRenderCoordinator(
       executeFlush({ requestRenderAfter: false });
     }
 
+    if (sliceRenderSeriesDue) {
+      sliceRenderSeriesDue = false;
+      sliceRenderSeriesToVisibleRange();
+    }
+
     const hasCartesianSeries = currentOptions.series.some((s) => s.type !== 'pie');
     const seriesForIntro = renderSeries;
 
@@ -3064,7 +3360,7 @@ export function createRenderCoordinator(
       : computeBaseXDomain(currentOptions, runtimeRawBoundsByIndex);
     const yBaseDomain = updateTransition
       ? lerpDomain(updateTransition.from.yBaseDomain, updateTransition.to.yBaseDomain, updateP)
-      : computeBaseYDomain(currentOptions, runtimeRawBoundsByIndex);
+      : computeBaseYDomain(currentOptions, runtimeRawBoundsByIndex, cachedVisibleYBounds);
     const visibleXDomain = computeVisibleXDomain(baseXDomain, zoomRange);
 
     const plotClipRect = computePlotClipRect(gridArea);
@@ -3074,6 +3370,123 @@ export function createRenderCoordinator(
       .domain(visibleXDomain.min, visibleXDomain.max)
       .range(plotClipRect.left, plotClipRect.right);
     const yScale = createLinearScale().domain(yBaseDomain.min, yBaseDomain.max).range(plotClipRect.bottom, plotClipRect.top);
+
+    // PERFORMANCE: Cache canvas CSS dimensions (used for both GPU overlays and label processing)
+    // Annotations (GPU overlays) are specified in data-space and converted to CANVAS-LOCAL CSS pixels.
+    const canvas = gpuContext.canvas;
+    // IMPORTANT: use the same DPR as the GPU render path (gridArea) to keep CSS↔device conversions stable.
+    const canvasDprForAnnotations = gridArea.devicePixelRatio;
+    // IMPORTANT: For GPU overlay annotations only, derive CSS size from device pixels to avoid
+    // DOM `clientWidth/clientHeight` mismatch with the WebGPU render target size.
+    const canvasCssForAnnotations = getCanvasCssSizeFromDevicePixels(canvas, canvasDprForAnnotations);
+    const canvasCssWidthForAnnotations = canvasCssForAnnotations.width;
+    const canvasCssHeightForAnnotations = canvasCssForAnnotations.height;
+
+    const plotLeftCss = canvasCssWidthForAnnotations > 0 ? clipXToCanvasCssPx(plotClipRect.left, canvasCssWidthForAnnotations) : 0;
+    const plotRightCss = canvasCssWidthForAnnotations > 0 ? clipXToCanvasCssPx(plotClipRect.right, canvasCssWidthForAnnotations) : 0;
+    const plotTopCss = canvasCssHeightForAnnotations > 0 ? clipYToCanvasCssPx(plotClipRect.top, canvasCssHeightForAnnotations) : 0;
+    const plotBottomCss = canvasCssHeightForAnnotations > 0 ? clipYToCanvasCssPx(plotClipRect.bottom, canvasCssHeightForAnnotations) : 0;
+    const plotWidthCss = Math.max(0, plotRightCss - plotLeftCss);
+    const plotHeightCss = Math.max(0, plotBottomCss - plotTopCss);
+
+    const resolveAnnotationRgba = (color: string | undefined, opacity: number | undefined): readonly [number, number, number, number] => {
+      const base =
+        parseCssColorToRgba01(color ?? currentOptions.theme.textColor) ??
+        parseCssColorToRgba01(currentOptions.theme.textColor) ??
+        ([1, 1, 1, 1] as const);
+      const o = opacity == null ? 1 : clamp01(opacity);
+      return [clamp01(base[0]), clamp01(base[1]), clamp01(base[2]), clamp01(base[3] * o)] as const;
+    };
+
+    const annotations: ReadonlyArray<AnnotationConfig> = hasCartesianSeries ? (currentOptions.annotations ?? []) : [];
+
+    // PERFORMANCE: Reuse arrays from previous frame (clear and reuse to avoid allocations)
+    annotationLineBelow.length = 0;
+    annotationLineAbove.length = 0;
+    annotationMarkerBelow.length = 0;
+    annotationMarkerAbove.length = 0;
+
+    // PERFORMANCE: Early exit if no annotations or invalid canvas dimensions
+    if (annotations.length > 0 && canvasCssWidthForAnnotations > 0 && canvasCssHeightForAnnotations > 0 && plotWidthCss > 0 && plotHeightCss > 0) {
+      for (let i = 0; i < annotations.length; i++) {
+        const a = annotations[i]!;
+        const layer = a.layer ?? 'aboveSeries';
+        const targetLines = layer === 'belowSeries' ? annotationLineBelow : annotationLineAbove;
+        const targetMarkers = layer === 'belowSeries' ? annotationMarkerBelow : annotationMarkerAbove;
+
+        const styleColor = a.style?.color;
+        const styleOpacity = a.style?.opacity;
+        const lineWidth = typeof a.style?.lineWidth === 'number' && Number.isFinite(a.style.lineWidth) ? Math.max(0, a.style.lineWidth) : 1;
+        const lineDash = a.style?.lineDash;
+        const rgba = resolveAnnotationRgba(styleColor, styleOpacity);
+
+        switch (a.type) {
+          case 'lineX': {
+            const xClip = xScale.scale(a.x);
+            const xCss = clipXToCanvasCssPx(xClip, canvasCssWidthForAnnotations);
+            if (!Number.isFinite(xCss)) break;
+            targetLines.push({
+              axis: 'vertical',
+              positionCssPx: xCss,
+              lineWidth,
+              lineDash,
+              rgba,
+            });
+            break;
+          }
+          case 'lineY': {
+            const yClip = yScale.scale(a.y);
+            const yCss = clipYToCanvasCssPx(yClip, canvasCssHeightForAnnotations);
+            if (!Number.isFinite(yCss)) break;
+            targetLines.push({
+              axis: 'horizontal',
+              positionCssPx: yCss,
+              lineWidth,
+              lineDash,
+              rgba,
+            });
+            break;
+          }
+          case 'point': {
+            const xClip = xScale.scale(a.x);
+            const yClip = yScale.scale(a.y);
+            const xCss = clipXToCanvasCssPx(xClip, canvasCssWidthForAnnotations);
+            const yCss = clipYToCanvasCssPx(yClip, canvasCssHeightForAnnotations);
+            if (!Number.isFinite(xCss) || !Number.isFinite(yCss)) break;
+
+            const markerSize =
+              typeof a.marker?.size === 'number' && Number.isFinite(a.marker.size) ? Math.max(1, a.marker.size) : 6;
+            const markerColor = a.marker?.style?.color ?? a.style?.color;
+            const markerOpacity = a.marker?.style?.opacity ?? a.style?.opacity;
+            const fillRgba = resolveAnnotationRgba(markerColor, markerOpacity);
+
+            targetMarkers.push({
+              xCssPx: xCss,
+              yCssPx: yCss,
+              sizeCssPx: markerSize,
+              fillRgba,
+            });
+            break;
+          }
+          case 'text': {
+            // Text annotations are handled via DOM overlays / callbacks (labels), not GPU.
+            break;
+          }
+          default:
+            assertUnreachable(a);
+        }
+      }
+    }
+
+    // PERFORMANCE: Use array references directly instead of spreading (avoids allocation)
+    const combinedReferenceLines: ReadonlyArray<ReferenceLineInstance> =
+      annotationLineBelow.length + annotationLineAbove.length > 0 ? [...annotationLineBelow, ...annotationLineAbove] : [];
+    const combinedMarkers: ReadonlyArray<AnnotationMarkerInstance> =
+      annotationMarkerBelow.length + annotationMarkerAbove.length > 0 ? [...annotationMarkerBelow, ...annotationMarkerAbove] : [];
+    const referenceLineBelowCount = annotationLineBelow.length;
+    const referenceLineAboveCount = annotationLineAbove.length;
+    const markerBelowCount = annotationMarkerBelow.length;
+    const markerAboveCount = annotationMarkerAbove.length;
 
     // Story 6: compute an x tick count that prevents label overlap (time axis only).
     // IMPORTANT: compute in CSS px, since labels are DOM elements in CSS px.
@@ -3523,11 +3936,23 @@ export function createRenderCoordinator(
         case 'line': {
           // Always prepare the line stroke.
           // If we already appended into the DataStore this frame (fast-path), avoid a full re-upload.
+          // For time axes (epoch-ms), subtract an x-origin before packing to Float32 to avoid precision loss
+          // (Float32 ulp at ~1e12 is ~2e5), which can manifest as stroke shimmer during zoom.
+          const xOffset = (() => {
+            if (currentOptions.xAxis.type !== 'time') return 0;
+            const d = s.data;
+            for (let k = 0; k < d.length; k++) {
+              const p = d[k]!;
+              const x = isTupleDataPoint(p) ? p[0] : p.x;
+              if (Number.isFinite(x)) return x;
+            }
+            return 0;
+          })();
           if (!appendedGpuThisFrame.has(i)) {
-            dataStore.setSeries(i, s.data);
+            dataStore.setSeries(i, s.data, { xOffset });
           }
           const buffer = dataStore.getSeriesBuffer(i);
-          lineRenderers[i].prepare(s, buffer, xScale, yScale);
+          lineRenderers[i].prepare(s, buffer, xScale, yScale, xOffset);
 
           // Track the GPU buffer kind for future append fast-path decisions.
           const zoomRange = zoomState?.getRange() ?? null;
@@ -3637,7 +4062,47 @@ export function createRenderCoordinator(
     const yScaleForBars = introP < 1 ? createAnimatedBarYScale(yScale, plotClipRect, barSeriesConfigs, introP) : yScale;
     barRenderer.prepare(barSeriesConfigs, dataStore, xScale, yScaleForBars, gridArea);
 
-    const textureView = gpuContext.canvasContext.getCurrentTexture().createView();
+    // Prepare annotation GPU overlays (reference lines + point markers).
+    // Note: these renderers expect CANVAS-LOCAL CSS pixel coordinates; the coordinator owns
+    // data-space → canvas-space conversion and plot scissor state.
+    if (hasCartesianSeries) {
+      referenceLineRenderer.prepare(gridArea, combinedReferenceLines);
+      referenceLineRendererMsaa.prepare(gridArea, combinedReferenceLines);
+      annotationMarkerRenderer.prepare({
+        canvasWidth: gridArea.canvasWidth,
+        canvasHeight: gridArea.canvasHeight,
+        devicePixelRatio: gridArea.devicePixelRatio,
+        instances: combinedMarkers,
+      });
+      annotationMarkerRendererMsaa.prepare({
+        canvasWidth: gridArea.canvasWidth,
+        canvasHeight: gridArea.canvasHeight,
+        devicePixelRatio: gridArea.devicePixelRatio,
+        instances: combinedMarkers,
+      });
+    } else {
+      // Ensure prior frame instances don't persist visually if series mode changes.
+      referenceLineRenderer.prepare(gridArea, []);
+      referenceLineRendererMsaa.prepare(gridArea, []);
+      annotationMarkerRenderer.prepare({
+        canvasWidth: gridArea.canvasWidth,
+        canvasHeight: gridArea.canvasHeight,
+        devicePixelRatio: gridArea.devicePixelRatio,
+        instances: [],
+      });
+      annotationMarkerRendererMsaa.prepare({
+        canvasWidth: gridArea.canvasWidth,
+        canvasHeight: gridArea.canvasHeight,
+        devicePixelRatio: gridArea.devicePixelRatio,
+        instances: [],
+      });
+    }
+
+    // Ensure offscreen + MSAA overlay targets match current device-pixel canvas size.
+    ensureOverlayTargets(gridArea.canvasWidth, gridArea.canvasHeight);
+
+    // Swapchain view for the resolved MSAA overlay pass and for the final (load) overlay pass.
+    const swapchainView = gpuContext.canvasContext.getCurrentTexture().createView();
     const encoder = device.createCommandEncoder({ label: 'renderCoordinator/commandEncoder' });
     const clearValue = parseCssColorToGPUColor(currentOptions.theme.backgroundColor, { r: 0, g: 0, b: 0, a: 1 });
 
@@ -3649,11 +4114,13 @@ export function createRenderCoordinator(
       }
     }
 
-    const pass = encoder.beginRenderPass({
-      label: 'renderCoordinator/renderPass',
+    const mainPass = encoder.beginRenderPass({
+      label: 'renderCoordinator/mainPass',
       colorAttachments: [
         {
-          view: textureView,
+          // Render main scene to an offscreen single-sampled texture so the annotation overlay can
+          // be MSAA'd and resolved into the swapchain without losing the already-rendered content.
+          view: mainColorView!,
           clearValue,
           loadOp: 'clear',
           storeOp: 'store',
@@ -3670,11 +4137,26 @@ export function createRenderCoordinator(
     // - line strokes next
     // - highlight next (on top of strokes)
     // - axes last (on top)
-    gridRenderer.render(pass);
+    gridRenderer.render(mainPass);
 
     for (let i = 0; i < seriesForRender.length; i++) {
       if (seriesForRender[i].type === 'pie') {
-        pieRenderers[i].render(pass);
+        pieRenderers[i].render(mainPass);
+      }
+    }
+
+    // Annotations (below series): clipped to plot scissor.
+    if (hasCartesianSeries && plotScissor.w > 0 && plotScissor.h > 0) {
+      const hasBelow = referenceLineBelowCount > 0 || markerBelowCount > 0;
+      if (hasBelow) {
+        mainPass.setScissorRect(plotScissor.x, plotScissor.y, plotScissor.w, plotScissor.h);
+        if (referenceLineBelowCount > 0) {
+          referenceLineRenderer.render(mainPass, 0, referenceLineBelowCount);
+        }
+        if (markerBelowCount > 0) {
+          annotationMarkerRenderer.render(mainPass, 0, markerBelowCount);
+        }
+        mainPass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
       }
     }
 
@@ -3684,35 +4166,35 @@ export function createRenderCoordinator(
         if (introP < 1) {
           const w = clampInt(Math.floor(plotScissor.w * introP), 0, plotScissor.w);
           if (w > 0 && plotScissor.h > 0) {
-            pass.setScissorRect(plotScissor.x, plotScissor.y, w, plotScissor.h);
-            areaRenderers[i].render(pass);
-            pass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
+            mainPass.setScissorRect(plotScissor.x, plotScissor.y, w, plotScissor.h);
+            areaRenderers[i].render(mainPass);
+            mainPass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
           }
         } else {
-          pass.setScissorRect(plotScissor.x, plotScissor.y, plotScissor.w, plotScissor.h);
-          areaRenderers[i].render(pass);
-          pass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
+          mainPass.setScissorRect(plotScissor.x, plotScissor.y, plotScissor.w, plotScissor.h);
+          areaRenderers[i].render(mainPass);
+          mainPass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
         }
       }
     }
     // Clip bars to the plot grid (mirrors area/line scissor usage).
     if (plotScissor.w > 0 && plotScissor.h > 0) {
-      pass.setScissorRect(plotScissor.x, plotScissor.y, plotScissor.w, plotScissor.h);
-      barRenderer.render(pass);
-      pass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
+      mainPass.setScissorRect(plotScissor.x, plotScissor.y, plotScissor.w, plotScissor.h);
+      barRenderer.render(mainPass);
+      mainPass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
     }
     for (let i = 0; i < seriesForRender.length; i++) {
       if (seriesForRender[i].type === 'candlestick') {
-        candlestickRenderers[i].render(pass);
+        candlestickRenderers[i].render(mainPass);
       }
     }
     for (let i = 0; i < seriesForRender.length; i++) {
       const s = seriesForRender[i];
       if (s.type !== 'scatter') continue;
       if (s.mode === 'density') {
-        scatterDensityRenderers[i].render(pass);
+        scatterDensityRenderers[i].render(mainPass);
       } else {
-        scatterRenderers[i].render(pass);
+        scatterRenderers[i].render(mainPass);
       }
     }
     for (let i = 0; i < seriesForRender.length; i++) {
@@ -3721,33 +4203,84 @@ export function createRenderCoordinator(
         if (introP < 1) {
           const w = clampInt(Math.floor(plotScissor.w * introP), 0, plotScissor.w);
           if (w > 0 && plotScissor.h > 0) {
-            pass.setScissorRect(plotScissor.x, plotScissor.y, w, plotScissor.h);
-            lineRenderers[i].render(pass);
-            pass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
+            mainPass.setScissorRect(plotScissor.x, plotScissor.y, w, plotScissor.h);
+            lineRenderers[i].render(mainPass);
+            mainPass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
           }
         } else {
-          pass.setScissorRect(plotScissor.x, plotScissor.y, plotScissor.w, plotScissor.h);
-          lineRenderers[i].render(pass);
-          pass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
+          mainPass.setScissorRect(plotScissor.x, plotScissor.y, plotScissor.w, plotScissor.h);
+          lineRenderers[i].render(mainPass);
+          mainPass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
         }
       }
     }
 
-    highlightRenderer.render(pass);
-    if (hasCartesianSeries) {
-      xAxisRenderer.render(pass);
-      yAxisRenderer.render(pass);
-    }
-    crosshairRenderer.render(pass);
+    mainPass.end();
 
-    pass.end();
+    // MSAA annotation overlay pass: blit main color → MSAA target, then draw above-series annotations.
+    const overlayPass = encoder.beginRenderPass({
+      label: 'renderCoordinator/annotationOverlayMsaaPass',
+      colorAttachments: [
+        {
+          view: overlayMsaaView!,
+          resolveTarget: swapchainView,
+          clearValue,
+          loadOp: 'clear',
+          storeOp: 'discard',
+        },
+      ],
+    });
+
+    overlayPass.setPipeline(overlayBlitPipeline);
+    overlayPass.setBindGroup(0, overlayBlitBindGroup!);
+    overlayPass.draw(3);
+
+    // Annotations (above series): reference lines then markers, clipped to plot scissor.
+    if (hasCartesianSeries && plotScissor.w > 0 && plotScissor.h > 0) {
+      const hasAbove = referenceLineAboveCount > 0 || markerAboveCount > 0;
+      if (hasAbove) {
+        const firstLine = referenceLineBelowCount;
+        const firstMarker = markerBelowCount;
+        overlayPass.setScissorRect(plotScissor.x, plotScissor.y, plotScissor.w, plotScissor.h);
+        if (referenceLineAboveCount > 0) {
+          referenceLineRendererMsaa.render(overlayPass, firstLine, referenceLineAboveCount);
+        }
+        if (markerAboveCount > 0) {
+          annotationMarkerRendererMsaa.render(overlayPass, firstMarker, markerAboveCount);
+        }
+        overlayPass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
+      }
+    }
+
+    overlayPass.end();
+
+    // Top overlays (single-sample): axes, highlights, crosshair.
+    const topOverlayPass = encoder.beginRenderPass({
+      label: 'renderCoordinator/topOverlayPass',
+      colorAttachments: [
+        {
+          view: swapchainView,
+          loadOp: 'load',
+          storeOp: 'store',
+        },
+      ],
+    });
+
+    highlightRenderer.render(topOverlayPass);
+    if (hasCartesianSeries) {
+      xAxisRenderer.render(topOverlayPass);
+      yAxisRenderer.render(topOverlayPass);
+    }
+    crosshairRenderer.render(topOverlayPass);
+
+    topOverlayPass.end();
     device.queue.submit([encoder.finish()]);
 
     hasRenderedOnce = true;
 
     // Generate axis labels for DOM overlay (main thread) or callback (worker mode)
     const shouldGenerateAxisLabels = hasCartesianSeries && (
-      (overlay && overlayContainer) ||  // DOM mode with overlay
+      (axisLabelOverlay && overlayContainer) ||  // DOM mode with overlay
       (!domOverlaysEnabled && callbacks?.onAxisLabelsUpdate)  // Worker mode with callback
     );
 
@@ -3769,8 +4302,8 @@ export function createRenderCoordinator(
       const plotTopCss = clipYToCanvasCssPx(plotClipRect.top, canvasCssHeight);
       const plotBottomCss = clipYToCanvasCssPx(plotClipRect.bottom, canvasCssHeight);
 
-      // Clear DOM overlay if it exists
-      overlay?.clear();
+      // Clear axis label overlay if it exists
+      axisLabelOverlay?.clear();
 
       // Collect axis labels for callback emission
       const collectedXLabels: AxisLabel[] = [];
@@ -3802,8 +4335,8 @@ export function createRenderCoordinator(
         collectedXLabels.push(axisLabel);
 
         // Add to DOM overlay if it exists (main thread mode)
-        if (overlay) {
-          const span = overlay.addLabel(label, offsetX + xCss, offsetY + xLabelY, {
+        if (axisLabelOverlay) {
+          const span = axisLabelOverlay.addLabel(label, offsetX + xCss, offsetY + xLabelY, {
             fontSize: currentOptions.theme.fontSize,
             color: currentOptions.theme.textColor,
             anchor,
@@ -3835,8 +4368,8 @@ export function createRenderCoordinator(
         collectedYLabels.push(axisLabel);
 
         // Add to DOM overlay if it exists (main thread mode)
-        if (overlay) {
-          const span = overlay.addLabel(label, offsetX + yLabelX, offsetY + yCss, {
+        if (axisLabelOverlay) {
+          const span = axisLabelOverlay.addLabel(label, offsetX + yLabelX, offsetY + yCss, {
             fontSize: currentOptions.theme.fontSize,
             color: currentOptions.theme.textColor,
             anchor: 'end',
@@ -3868,8 +4401,8 @@ export function createRenderCoordinator(
         collectedXLabels.push(axisLabel);
 
         // Add to DOM overlay if it exists (main thread mode)
-        if (overlay) {
-          const span = overlay.addLabel(xAxisName, offsetX + xCenter, offsetY + xTitleY, {
+        if (axisLabelOverlay) {
+          const span = axisLabelOverlay.addLabel(xAxisName, offsetX + xCenter, offsetY + xTitleY, {
             fontSize: axisNameFontSize,
             color: currentOptions.theme.textColor,
             anchor: 'middle',
@@ -3896,8 +4429,8 @@ export function createRenderCoordinator(
         collectedYLabels.push(axisLabel);
 
         // Add to DOM overlay if it exists (main thread mode)
-        if (overlay) {
-          const span = overlay.addLabel(yAxisName, offsetX + yTitleX, offsetY + yCenter, {
+        if (axisLabelOverlay) {
+          const span = axisLabelOverlay.addLabel(yAxisName, offsetX + yTitleX, offsetY + yCenter, {
             fontSize: axisNameFontSize,
             color: currentOptions.theme.textColor,
             anchor: 'middle',
@@ -3910,6 +4443,249 @@ export function createRenderCoordinator(
       // Emit axis labels callback when DOM overlays are disabled (worker mode)
       if (!domOverlaysEnabled && callbacks?.onAxisLabelsUpdate) {
         callbacks.onAxisLabelsUpdate(collectedXLabels, collectedYLabels);
+      }
+    }
+
+    // Generate annotation labels (DOM overlay in main-thread mode, callback in worker mode).
+    // PERFORMANCE: Reuse cached canvas dimensions from GPU overlay processing above
+    const shouldUpdateAnnotationLabels = hasCartesianSeries && (
+      (annotationOverlay && overlayContainer) ||
+      (!domOverlaysEnabled && callbacks?.onAnnotationsUpdate)
+    );
+
+    if (shouldUpdateAnnotationLabels) {
+      // PERFORMANCE: Reuse canvasCssWidthForAnnotations and canvasCssHeightForAnnotations computed above
+      if (
+        canvas &&
+        canvasCssWidthForAnnotations > 0 &&
+        canvasCssHeightForAnnotations > 0 &&
+        plotWidthCss > 0 &&
+        plotHeightCss > 0
+      ) {
+        const offsetX = isHTMLCanvasElement(canvas) ? canvas.offsetLeft : 0;
+        const offsetY = isHTMLCanvasElement(canvas) ? canvas.offsetTop : 0;
+
+        annotationOverlay?.clear();
+
+        const toCssRgba = (color: string, opacity01: number): string => {
+          const base = parseCssColorToRgba01(color) ?? ([0, 0, 0, 1] as const);
+          const a = clamp01(base[3] * clamp01(opacity01));
+          const r = Math.round(clamp01(base[0]) * 255);
+          const g = Math.round(clamp01(base[1]) * 255);
+          const b = Math.round(clamp01(base[2]) * 255);
+          return `rgba(${r}, ${g}, ${b}, ${a})`;
+        };
+
+        const formatNumber = (n: number, decimals?: number): string => {
+          if (!Number.isFinite(n)) return '';
+          if (decimals == null) return String(n);
+          const d = Math.min(20, Math.max(0, Math.floor(decimals)));
+          return n.toFixed(d);
+        };
+
+        // PERFORMANCE: Cache regex pattern (compiled once per render, reused for all templates)
+        const templateRegex = /\{(x|y|value|name)\}/g;
+        const renderTemplate = (
+          template: string,
+          values: Readonly<{ x?: number; y?: number; value?: number; name?: string }>,
+          decimals?: number
+        ): string => {
+          // PERFORMANCE: Reset regex lastIndex to ensure consistent behavior
+          templateRegex.lastIndex = 0;
+          return template.replace(templateRegex, (_m, key) => {
+            if (key === 'name') return values.name ?? '';
+            const v = (values as any)[key] as number | undefined;
+            return v == null ? '' : formatNumber(v, decimals);
+          });
+        };
+
+        const mapAnchor = (anchor: 'start' | 'center' | 'end' | undefined): TextOverlayAnchor => {
+          switch (anchor) {
+            case 'center':
+              return 'middle';
+            case 'end':
+              return 'end';
+            case 'start':
+            default:
+              return 'start';
+          }
+        };
+
+        // PERFORMANCE: Skip label processing if no annotations
+        const annotations = currentOptions.annotations ?? [];
+        if (annotations.length === 0) {
+          if (!domOverlaysEnabled && callbacks?.onAnnotationsUpdate) {
+            callbacks.onAnnotationsUpdate([]);
+          }
+        } else {
+          const labelsOut: AnnotationLabelData[] = [];
+
+          for (let i = 0; i < annotations.length; i++) {
+            const a = annotations[i]!;
+
+            const labelCfg = a.label;
+            const wantsLabel = labelCfg != null || a.type === 'text';
+            if (!wantsLabel) continue;
+
+          // Compute anchor point (canvas-local CSS px).
+          let anchorXCss: number | null = null;
+          let anchorYCss: number | null = null;
+          let values: { x?: number; y?: number; value?: number; name?: string } = { name: a.id ?? '' };
+
+          switch (a.type) {
+            case 'lineX': {
+              const xClip = xScale.scale(a.x);
+              const xCss = clipXToCanvasCssPx(xClip, canvasCssWidthForAnnotations);
+              anchorXCss = xCss;
+              anchorYCss = plotTopCss;
+              values = { ...values, x: a.x, value: a.x };
+              break;
+            }
+            case 'lineY': {
+              const yClip = yScale.scale(a.y);
+              const yCss = clipYToCanvasCssPx(yClip, canvasCssHeightForAnnotations);
+              anchorXCss = plotLeftCss;
+              anchorYCss = yCss;
+              values = { ...values, y: a.y, value: a.y };
+              break;
+            }
+            case 'point': {
+              const xClip = xScale.scale(a.x);
+              const yClip = yScale.scale(a.y);
+              const xCss = clipXToCanvasCssPx(xClip, canvasCssWidthForAnnotations);
+              const yCss = clipYToCanvasCssPx(yClip, canvasCssHeightForAnnotations);
+              anchorXCss = xCss;
+              anchorYCss = yCss;
+              values = { ...values, x: a.x, y: a.y, value: a.y };
+              break;
+            }
+            case 'text': {
+              if (a.position.space === 'data') {
+                const xClip = xScale.scale(a.position.x);
+                const yClip = yScale.scale(a.position.y);
+                const xCss = clipXToCanvasCssPx(xClip, canvasCssWidthForAnnotations);
+                const yCss = clipYToCanvasCssPx(yClip, canvasCssHeightForAnnotations);
+                anchorXCss = xCss;
+                anchorYCss = yCss;
+                values = { ...values, x: a.position.x, y: a.position.y, value: a.position.y };
+              } else {
+                const xCss = plotLeftCss + a.position.x * plotWidthCss;
+                const yCss = plotTopCss + a.position.y * plotHeightCss;
+                anchorXCss = xCss;
+                anchorYCss = yCss;
+                values = { ...values, x: a.position.x, y: a.position.y, value: a.position.y };
+              }
+              break;
+            }
+            default:
+              assertUnreachable(a);
+          }
+
+          if (anchorXCss == null || anchorYCss == null || !Number.isFinite(anchorXCss) || !Number.isFinite(anchorYCss)) {
+            continue;
+          }
+
+          const dx = labelCfg?.offset?.[0] ?? 0;
+          const dy = labelCfg?.offset?.[1] ?? 0;
+          const x = anchorXCss + dx;
+          const y = anchorYCss + dy;
+
+          // Label text selection (explicit > template > defaults).
+          const text =
+            labelCfg?.text ??
+            (labelCfg?.template
+              ? renderTemplate(labelCfg.template, values, labelCfg.decimals)
+              : labelCfg
+                ? (() => {
+                    const defaultTemplate =
+                      a.type === 'lineX'
+                        ? 'x={x}'
+                        : a.type === 'lineY'
+                          ? 'y={y}'
+                          : a.type === 'point'
+                            ? '({x}, {y})'
+                            : a.type === 'text'
+                              ? a.text
+                              : '';
+                    return defaultTemplate.includes('{')
+                      ? renderTemplate(defaultTemplate, values, labelCfg.decimals)
+                      : defaultTemplate;
+                  })()
+                : a.type === 'text'
+                  ? a.text
+                  : '');
+
+          const trimmed = typeof text === 'string' ? text.trim() : '';
+          if (trimmed.length === 0) continue;
+
+          const anchor = mapAnchor(labelCfg?.anchor);
+          const color = a.style?.color ?? currentOptions.theme.textColor;
+          const fontSize = currentOptions.theme.fontSize;
+
+          const bg = labelCfg?.background;
+          const bgColor =
+            bg?.color != null ? toCssRgba(bg.color, bg.opacity ?? 1) : undefined;
+          const padding = (() => {
+            const p = bg?.padding;
+            if (typeof p === 'number' && Number.isFinite(p)) return [p, p, p, p] as const;
+            if (Array.isArray(p) && p.length === 4 && p.every((n) => typeof n === 'number' && Number.isFinite(n))) {
+              return [p[0], p[1], p[2], p[3]] as const;
+            }
+            return bg ? ([2, 4, 2, 4] as const) : undefined;
+          })();
+          const borderRadius =
+            typeof bg?.borderRadius === 'number' && Number.isFinite(bg.borderRadius) ? bg.borderRadius : undefined;
+
+          const labelData: AnnotationLabelData = {
+            text: trimmed,
+            x: offsetX + x,
+            y: offsetY + y,
+            anchor,
+            color,
+            fontSize,
+            ...(bgColor
+              ? {
+                  background: {
+                    backgroundColor: bgColor,
+                    ...(padding ? { padding } : {}),
+                    ...(borderRadius != null ? { borderRadius } : {}),
+                  },
+                }
+              : {}),
+          };
+
+          labelsOut.push(labelData);
+
+            if (annotationOverlay) {
+              const span = annotationOverlay.addLabel(trimmed, labelData.x, labelData.y, {
+                fontSize,
+                color,
+                anchor,
+              });
+              if (labelData.background) {
+                span.style.backgroundColor = labelData.background.backgroundColor;
+                span.style.display = 'inline-block';
+                span.style.boxSizing = 'border-box';
+                if (labelData.background.padding) {
+                  const [t, r, b, l] = labelData.background.padding;
+                  span.style.padding = `${t}px ${r}px ${b}px ${l}px`;
+                }
+                if (labelData.background.borderRadius != null) {
+                  span.style.borderRadius = `${labelData.background.borderRadius}px`;
+                }
+              }
+            }
+          }
+
+          if (!domOverlaysEnabled && callbacks?.onAnnotationsUpdate) {
+            callbacks.onAnnotationsUpdate(labelsOut);
+          }
+        }
+      } else {
+        annotationOverlay?.clear();
+        if (!domOverlaysEnabled && callbacks?.onAnnotationsUpdate) {
+          callbacks.onAnnotationsUpdate([]);
+        }
       }
     }
   };
@@ -4182,6 +4958,18 @@ export function createRenderCoordinator(
     gridRenderer.dispose();
     xAxisRenderer.dispose();
     yAxisRenderer.dispose();
+    referenceLineRenderer.dispose();
+    annotationMarkerRenderer.dispose();
+    referenceLineRendererMsaa.dispose();
+    annotationMarkerRendererMsaa.dispose();
+
+    destroyTexture(mainColorTexture);
+    destroyTexture(overlayMsaaTexture);
+    mainColorTexture = null;
+    mainColorView = null;
+    overlayMsaaTexture = null;
+    overlayMsaaView = null;
+    overlayBlitBindGroup = null;
 
     dataStore.dispose();
 
@@ -4189,7 +4977,8 @@ export function createRenderCoordinator(
     tooltip?.dispose();
     tooltip = null;
     legend?.dispose();
-    overlay?.dispose();
+    axisLabelOverlay?.dispose();
+    annotationOverlay?.dispose();
   };
 
   const getInteractionX: RenderCoordinator['getInteractionX'] = () => interactionX;

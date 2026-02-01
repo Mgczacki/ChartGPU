@@ -112,6 +112,7 @@ interface ChartInstance {
   readonly coordinator: RenderCoordinator;
   readonly canvas: OffscreenCanvas;
   readonly renderChannel: MessageChannel;
+  readonly uncapturedErrorHandler?: (event: GPUUncapturedErrorEvent) => void;
   /** Shared mutable state (avoid Map lookups in hot paths) */
   readonly state: ChartInstanceState;
 }
@@ -314,6 +315,7 @@ export class ChartGPUWorkerController {
       // Set up early device loss monitoring (before coordinator creation)
       // This catches device loss during initialization
       // PERFORMANCE: Capture state reference to avoid Map lookup in device.lost handler
+      let uncapturedErrorHandler: ((event: GPUUncapturedErrorEvent) => void) | undefined;
       if (initializedContext.device) {
         initializedContext.device.lost.then((info) => {
           state.deviceLost = true;
@@ -328,7 +330,7 @@ export class ChartGPUWorkerController {
         });
 
         // Set up uncaptured error handler for GPU validation errors
-        initializedContext.device.addEventListener('uncapturederror', (event: GPUUncapturedErrorEvent) => {
+        uncapturedErrorHandler = (event: GPUUncapturedErrorEvent) => {
           const errorMessage = event.error instanceof GPUValidationError
             ? `WebGPU Validation Error: ${event.error.message}`
             : event.error instanceof GPUOutOfMemoryError
@@ -336,7 +338,8 @@ export class ChartGPUWorkerController {
             : `WebGPU Error: ${event.error.message}`;
           
           this.emitError(msg.chartId, 'RENDER_ERROR', errorMessage, 'uncaptured_gpu_error');
-        });
+        };
+        initializedContext.device.addEventListener('uncapturederror', uncapturedErrorHandler);
       }
 
       // Create render coordinator with worker-mode callbacks
@@ -406,6 +409,15 @@ export class ChartGPUWorkerController {
               chartId: msg.chartId,
               xLabels,
               yLabels,
+            });
+          },
+
+          // Emit annotation label updates to main thread for DOM overlay rendering
+          onAnnotationsUpdate: (labels) => {
+            this.emit({
+              type: 'annotationsUpdate',
+              chartId: msg.chartId,
+              labels,
             });
           },
 
@@ -507,6 +519,7 @@ export class ChartGPUWorkerController {
         coordinator,
         canvas: msg.canvas,
         renderChannel,
+        uncapturedErrorHandler,
         state,  // Shared state object (captured in coordinator callbacks)
       };
       this.charts.set(msg.chartId, instance);
@@ -845,12 +858,6 @@ export class ChartGPUWorkerController {
     event: import('../config/types').PointerEventData
   ): void {
     try {
-      console.log('[ChartGPUWorkerController] Received pointer event:', {
-        type: event.type,
-        gridX: event.gridX,
-        gridY: event.gridY,
-        isInGrid: event.isInGrid,
-      });
       const instance = this.getChartInstance(chartId, 'forwardPointerEvent');
       instance.coordinator.handlePointerEvent(event);
     } catch (error) {
@@ -1109,6 +1116,16 @@ export class ChartGPUWorkerController {
 
       // Mark as disposed to prevent further operations
       instance.state.disposed = true;
+
+      // Remove GPU error listener before destroying the device/context.
+      try {
+        const device = instance.gpuContext.device;
+        if (device && instance.uncapturedErrorHandler) {
+          device.removeEventListener('uncapturederror', instance.uncapturedErrorHandler);
+        }
+      } catch (error) {
+        cleanupErrors.push(`Failed to remove GPU error listener: ${error}`);
+      }
 
       // Close render channel
       try {

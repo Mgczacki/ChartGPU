@@ -231,12 +231,17 @@
           <input id="benchmarkMode" type="checkbox" checked />
           Benchmark mode
         </label>
+        <label>
+          <input id="autoBoundsVisible" type="checkbox" checked />
+          Auto-scale Y to visible data
+        </label>
         <button id="resetZoom">Reset zoom</button>
       </div>
 
       <div class="info-text">
         <strong>Benchmark mode:</strong> Continuously renders every frame to measure peak performance. 
-        <strong>Non-benchmark mode:</strong> Render-on-demand (only when interacting or data changes). Low FPS when idle is expected and means the chart is efficiently NOT wasting CPU.
+        <strong>Non-benchmark mode:</strong> Render-on-demand (only when interacting or data changes). Low FPS when idle is expected and means the chart is efficiently NOT wasting CPU.<br>
+        <strong>Auto-scale Y:</strong> When checked, y-axis rescales to fit visible data in the current zoom window. When unchecked, y-axis uses full dataset bounds regardless of zoom.
       </div>
 
       <div class="readouts">

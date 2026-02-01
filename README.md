@@ -6,23 +6,18 @@
   High-performance charts powered by WebGPU
 </p>
 
-<p align="center">
-  <a href="https://github.com/hunterg325/ChartGPU/blob/main/docs/GETTING_STARTED.md">Documentation</a> |
-  <a href="https://chartgpu.github.io/ChartGPU/">Live Demo</a> |
-  <a href="https://github.com/hunterg325/ChartGPU/tree/main/examples">Examples</a>
-</p>
+<div align="center">
 
-<p align="center">
-  <a href="https://www.npmjs.com/package/chartgpu" style="text-decoration: none;">
-    <img src="https://img.shields.io/npm/v/chartgpu" alt="npm">
-  </a>
-  <a href="https://github.com/hunterg325/ChartGPU/blob/main/LICENSE" style="text-decoration: none;">
-    <img src="https://img.shields.io/npm/l/chartgpu" alt="license">
-  </a>
-  <a href="https://chartgpu.github.io/ChartGPU/" style="text-decoration: none;">
-    <img src="https://img.shields.io/badge/demo-live-brightgreen" alt="Live Demo">
-  </a>
-</p>
+[![Examples](https://img.shields.io/badge/Examples-Code%20Samples-blue?style=for-the-badge)](https://github.com/hunterg325/ChartGPU/tree/main/examples)
+
+[![Documentation](https://img.shields.io/badge/Documentation-Getting%20Started-blue?style=for-the-badge)](https://github.com/hunterg325/ChartGPU/blob/main/docs/GETTING_STARTED.md)
+
+[![npm version](https://img.shields.io/npm/v/chartgpu?style=for-the-badge&color=blue)](https://www.npmjs.com/package/chartgpu)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://github.com/hunterg325/ChartGPU/blob/main/LICENSE)
+[![Live Demo](https://img.shields.io/badge/demo-live-brightgreen?style=for-the-badge)](https://chartgpu.github.io/ChartGPU/)
+
+</div>
+
 
 ChartGPU is a TypeScript charting library built on WebGPU for smooth, interactive rendering—especially when you have lots of data.
 
@@ -32,6 +27,7 @@ ChartGPU is a TypeScript charting library built on WebGPU for smooth, interactiv
 - ⚡ Worker-based rendering with OffscreenCanvas (optional - for maximum performance)
 - 📈 Multiple series types: line, area, bar, scatter, pie, candlestick
 - 🌡️ Scatter density/heatmap mode (`mode: 'density'`) for large point clouds — see [`docs/api/options.md#scatterseriesconfig`](docs/api/options.md#scatterseriesconfig) and [`examples/scatter-density-1m/`](examples/scatter-density-1m/)
+- 📍 Annotation overlays: reference lines (horizontal/vertical), point markers, and text labels — see [`docs/api/options.md#annotations`](docs/api/options.md#annotations) and [`examples/annotations/`](examples/annotations/)
 - 🧭 Built-in interaction: hover highlight, tooltip, crosshair
 - 🔁 Streaming updates via `appendData(...)` (cartesian series)
 - 🔍 X-axis zoom (inside gestures + optional slider UI)
@@ -89,7 +85,7 @@ flowchart TB
         Coordinator --> Events["createEventManager(canvas, gridArea)"]
         Events --> OverlayHitTest["hover/tooltip hit-testing"]
         Events --> InteractionX["interaction-x state (crosshair)"]
-        Coordinator --> OverlaysDOM["DOM overlays: legend / tooltip / text labels"]
+        Coordinator --> OverlaysDOM["DOM overlays: legend / tooltip / text labels / annotation labels"]
       end
     end
   end
@@ -106,7 +102,7 @@ flowchart TB
       ProxyInit --> ProxyInstance["ChartGPUWorkerProxy implements ChartGPUInstance"]
       ProxyInstance --> ProxyState["Local state cache<br/>(options, interactionX, zoomRange)"]
       ProxyInstance --> EventForwarding["Event forwarding to worker<br/>(pointerdown/move/up/leave/wheel)"]
-      ProxyInstance --> ProxyOverlays["DOM overlay management<br/>(tooltip, legend, text, slider)"]
+      ProxyInstance --> ProxyOverlays["DOM overlay management<br/>(tooltip, legend, text, annotation, slider)"]
       ProxyInstance --> ResizeMonitoring["ResizeObserver + DPR monitoring<br/>(RAF batched)"]
       
       EventForwarding --> ForwardPointer["computePointerEventData()<br/>(calculates grid coords on main thread)"]
@@ -145,6 +141,7 @@ flowchart TB
       WHitTest -->|"tooltipUpdate"| TooltipMsg["TooltipUpdateMessage<br/>(complete tooltip content + position)"]
       WCoordinator -->|"legendUpdate"| LegendMsg["LegendUpdateMessage"]
       WCoordinator -->|"axisLabelsUpdate"| AxisMsg["AxisLabelsUpdateMessage"]
+      WCoordinator -->|"annotationsUpdate"| AnnotationsMsg["AnnotationsUpdateMessage<br/>(annotation label positions + styles)"]
       WHitTest -->|"hoverChange"| HoverMsg["HoverChangeMessage"]
       WHitTest -->|"click"| ClickMsg["ClickMessage"]
       WHitTest -->|"crosshairMove"| CrosshairMsg["CrosshairMoveMessage"]
@@ -161,6 +158,7 @@ flowchart TB
       TooltipMsg --> DOMTooltip["RAF-batched tooltip.show(x, y, content)<br/>(receives complete tooltip data from worker)"]
       LegendMsg --> DOMLegend["RAF-batched legend.update(items, theme)"]
       AxisMsg --> DOMAxis["RAF-batched textOverlay.addLabel(...)<br/>(auto-handles container overflow)"]
+      AnnotationsMsg --> DOMAnnotations["RAF-batched annotationTextOverlay.addLabel(...)<br/>(dedicated annotation overlay)"]
       HoverMsg --> DOMHover["Re-emit 'mouseover'/'mouseout' events"]
       ClickMsg --> DOMClick["Re-emit 'click' event"]
       CrosshairMsg --> DOMCrosshair["Update cached interactionX + emit"]
@@ -169,6 +167,7 @@ flowchart TB
       ProxyOverlays --> DOMTooltip
       ProxyOverlays --> DOMLegend
       ProxyOverlays --> DOMAxis
+      ProxyOverlays --> DOMAnnotations
     end
   end
 
@@ -181,6 +180,8 @@ flowchart TB
     RenderPass --> LineR["Line"]
     RenderPass --> PieR["Pie"]
     RenderPass --> CandlestickR["Candlestick"]
+    RenderPass --> ReferenceLineR["Reference lines"]
+    RenderPass --> AnnotationMarkerR["Annotation markers"]
     RenderPass --> CrosshairR["Crosshair overlay"]
     RenderPass --> HighlightR["Hover highlight overlay"]
     RenderPass --> AxisR["Axes/ticks"]
@@ -198,6 +199,8 @@ flowchart TB
     LineR --> lineWGSL["line.wgsl"]
     PieR --> pieWGSL["pie.wgsl"]
     CandlestickR --> candlestickWGSL["candlestick.wgsl"]
+    ReferenceLineR --> referenceLineWGSL["referenceLine.wgsl"]
+    AnnotationMarkerR --> annotationMarkerWGSL["annotationMarker.wgsl"]
     CrosshairR --> crosshairWGSL["crosshair.wgsl"]
     HighlightR --> highlightWGSL["highlight.wgsl"]
   end
@@ -264,6 +267,39 @@ await ChartGPU.createInWorker(container, {
 - Mobile/low-power devices
 
 See [Worker API Documentation](https://github.com/hunterg325/ChartGPU/blob/main/docs/api/worker.md) for details.
+
+### Annotations
+
+Add reference lines, point markers, and text overlays to highlight important data features:
+
+```ts
+await ChartGPU.create(container, {
+  series: [{ type: 'line', data: [[0, 1], [1, 3], [2, 2]] }],
+  annotations: [
+    // Horizontal reference line
+    {
+      id: 'ref-y',
+      type: 'lineY',
+      y: 2.5,
+      layer: 'belowSeries',
+      style: { color: '#ffd166', lineWidth: 2, lineDash: [8, 6], opacity: 0.95 },
+      label: { text: 'threshold' },
+    },
+    // Point marker at peak
+    {
+      id: 'peak',
+      type: 'point',
+      x: 1,
+      y: 3,
+      layer: 'aboveSeries',
+      marker: { symbol: 'circle', size: 8, style: { color: '#ff4ab0' } },
+      label: { template: 'peak={y}', decimals: 2 },
+    },
+  ],
+});
+```
+
+See [Annotations Documentation](https://github.com/hunterg325/ChartGPU/blob/main/docs/api/options.md#annotations) and the [annotations example](https://github.com/hunterg325/ChartGPU/tree/main/examples/annotations).
 
 ## Installation
 

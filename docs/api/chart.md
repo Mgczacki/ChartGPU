@@ -6,6 +6,8 @@ See [ChartGPU.ts](../../src/ChartGPU.ts) for the chart instance implementation.
 
 Creates a chart instance bound to a container element.
 
+**Worker mode note (important)**: when using `ChartGPU.createInWorker(...)`, the `options` object must be **structured-cloneable** (no functions; avoid `Date`). For annotation labels, prefer `AnnotationLabel.template` (template strings) over formatter callbacks.
+
 ## `ChartGPUInstance`
 
 Returned by `ChartGPU.create(...)`.

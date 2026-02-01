@@ -176,7 +176,7 @@ flowchart TB
         Coordinator --> Events["createEventManager(canvas, gridArea)"]
         Events --> OverlayHitTest["hover/tooltip hit-testing"]
         Events --> InteractionX["interaction-x state (crosshair)"]
-        Coordinator --> OverlaysDOM["DOM overlays: legend / tooltip / text labels"]
+        Coordinator --> OverlaysDOM["DOM overlays: legend / tooltip / text labels / annotation labels"]
       end
     end
   end
@@ -193,7 +193,7 @@ flowchart TB
       ProxyInit --> ProxyInstance["ChartGPUWorkerProxy implements ChartGPUInstance"]
       ProxyInstance --> ProxyState["Local state cache<br/>(options, interactionX, zoomRange)"]
       ProxyInstance --> EventForwarding["Event forwarding to worker<br/>(pointerdown/move/up/leave/wheel)"]
-      ProxyInstance --> ProxyOverlays["DOM overlay management<br/>(tooltip, legend, text, slider)"]
+      ProxyInstance --> ProxyOverlays["DOM overlay management<br/>(tooltip, legend, text, annotation, slider)"]
       ProxyInstance --> ResizeMonitoring["ResizeObserver + DPR monitoring<br/>(RAF batched)"]
       
       EventForwarding --> ForwardPointer["computePointerEventData()<br/>(calculates grid coords on main thread)"]
@@ -232,6 +232,7 @@ flowchart TB
       WHitTest -->|"tooltipUpdate"| TooltipMsg["TooltipUpdateMessage<br/>(complete tooltip content + position)"]
       WCoordinator -->|"legendUpdate"| LegendMsg["LegendUpdateMessage"]
       WCoordinator -->|"axisLabelsUpdate"| AxisMsg["AxisLabelsUpdateMessage"]
+      WCoordinator -->|"annotationsUpdate"| AnnotationsMsg["AnnotationsUpdateMessage<br/>(annotation label positions + styles)"]
       WHitTest -->|"hoverChange"| HoverMsg["HoverChangeMessage"]
       WHitTest -->|"click"| ClickMsg["ClickMessage"]
       WHitTest -->|"crosshairMove"| CrosshairMsg["CrosshairMoveMessage"]
@@ -248,6 +249,7 @@ flowchart TB
       TooltipMsg --> DOMTooltip["RAF-batched tooltip.show(x, y, content)<br/>(receives complete tooltip data from worker)"]
       LegendMsg --> DOMLegend["RAF-batched legend.update(items, theme)"]
       AxisMsg --> DOMAxis["RAF-batched textOverlay.addLabel(...)<br/>(auto-handles container overflow)"]
+      AnnotationsMsg --> DOMAnnotations["RAF-batched annotationTextOverlay.addLabel(...)<br/>(dedicated annotation overlay)"]
       HoverMsg --> DOMHover["Re-emit 'mouseover'/'mouseout' events"]
       ClickMsg --> DOMClick["Re-emit 'click' event"]
       CrosshairMsg --> DOMCrosshair["Update cached interactionX + emit"]
@@ -256,6 +258,7 @@ flowchart TB
       ProxyOverlays --> DOMTooltip
       ProxyOverlays --> DOMLegend
       ProxyOverlays --> DOMAxis
+      ProxyOverlays --> DOMAnnotations
     end
   end
 
@@ -268,6 +271,8 @@ flowchart TB
     RenderPass --> LineR["Line"]
     RenderPass --> PieR["Pie"]
     RenderPass --> CandlestickR["Candlestick"]
+    RenderPass --> ReferenceLineR["Reference lines"]
+    RenderPass --> AnnotationMarkerR["Annotation markers"]
     RenderPass --> CrosshairR["Crosshair overlay"]
     RenderPass --> HighlightR["Hover highlight overlay"]
     RenderPass --> AxisR["Axes/ticks"]
@@ -285,6 +290,8 @@ flowchart TB
     LineR --> lineWGSL["line.wgsl"]
     PieR --> pieWGSL["pie.wgsl"]
     CandlestickR --> candlestickWGSL["candlestick.wgsl"]
+    ReferenceLineR --> referenceLineWGSL["referenceLine.wgsl"]
+    AnnotationMarkerR --> annotationMarkerWGSL["annotationMarker.wgsl"]
     CrosshairR --> crosshairWGSL["crosshair.wgsl"]
     HighlightR --> highlightWGSL["highlight.wgsl"]
   end

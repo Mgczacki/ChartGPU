@@ -62,6 +62,15 @@ export interface AxisConfig {
   /** Tick length in CSS pixels (default: 6). */
   readonly tickLength?: number;
   readonly name?: string;
+  /**
+   * Axis domain auto-bounds mode (primarily used for y-axis):
+   * - `'global'`: derive from full dataset (pre-zoom behavior)
+   * - `'visible'`: derive from visible/zoomed data range (default for y-axis)
+   * 
+   * Note: explicit `min`/`max` always take precedence over auto-bounds.
+   * This option is primarily intended for `yAxis` (it has no effect on `xAxis` currently).
+   */
+  readonly autoBounds?: 'global' | 'visible';
 }
 
 export interface DataZoomConfig {
@@ -333,6 +342,29 @@ export interface AxisLabel {
 }
 
 /**
+ * Annotation label data emitted when domOverlays is false.
+ *
+ * This is intentionally structured-cloneable (no functions, Dates, class instances, etc).
+ */
+export interface AnnotationLabelData {
+  readonly text: string;
+  /** Canvas-local CSS pixel x coordinate. */
+  readonly x: number;
+  /** Canvas-local CSS pixel y coordinate. */
+  readonly y: number;
+  readonly anchor?: 'start' | 'middle' | 'end';
+  readonly color?: string;
+  readonly fontSize?: number;
+  readonly background?: Readonly<{
+    /** Fully resolved CSS color string (e.g. `rgba(...)`). */
+    readonly backgroundColor: string;
+    /** CSS padding in pixels: [top, right, bottom, left]. */
+    readonly padding?: readonly [number, number, number, number];
+    readonly borderRadius?: number;
+  }>;
+}
+
+/**
  * High-level pointer event data for worker thread event forwarding.
  * Pre-computed grid coordinates eliminate redundant computation in worker.
  */
@@ -491,12 +523,117 @@ export interface PerformanceCapabilities {
   readonly performanceMetricsSupported: boolean;
 }
 
+export type AnnotationLayer = 'belowSeries' | 'aboveSeries';
+
+export interface AnnotationStyle {
+  readonly color?: string;
+  readonly lineWidth?: number;
+  readonly lineDash?: ReadonlyArray<number>;
+  readonly opacity?: number;
+}
+
+export type AnnotationLabelAnchor = 'start' | 'center' | 'end';
+
+export type AnnotationLabelPadding =
+  | number
+  | readonly [top: number, right: number, bottom: number, left: number];
+
+export interface AnnotationLabelBackground {
+  readonly color?: string;
+  readonly opacity?: number;
+  readonly padding?: AnnotationLabelPadding;
+  readonly borderRadius?: number;
+}
+
+export interface AnnotationLabel {
+  /**
+   * Explicit label text. If provided, it takes precedence over template rendering.
+   */
+  readonly text?: string;
+  /**
+   * A template string for label generation (e.g. 'x={x}, y={y}').
+   * Template semantics are implemented at runtime (types only here).
+   */
+  readonly template?: string;
+  /**
+   * Decimal places used when formatting numeric values for templates.
+   */
+  readonly decimals?: number;
+  /**
+   * Pixel offset from the anchor point, in CSS pixels: [dx, dy].
+   */
+  readonly offset?: readonly [dx: number, dy: number];
+  readonly anchor?: AnnotationLabelAnchor;
+  readonly background?: AnnotationLabelBackground;
+}
+
+export type AnnotationPosition =
+  | Readonly<{ space: 'data'; x: number; y: number }>
+  | Readonly<{ space: 'plot'; x: number; y: number }>;
+
+export interface AnnotationLineX {
+  readonly type: 'lineX';
+  /** Data-space x coordinate for a vertical line. */
+  readonly x: number;
+  /**
+   * Optional y-range in data-space: [minY, maxY].
+   * If omitted, runtime may render the full plot height.
+   */
+  readonly yRange?: readonly [minY: number, maxY: number];
+}
+
+export interface AnnotationLineY {
+  readonly type: 'lineY';
+  /** Data-space y coordinate for a horizontal line. */
+  readonly y: number;
+  /**
+   * Optional x-range in data-space: [minX, maxX].
+   * If omitted, runtime may render the full plot width.
+   */
+  readonly xRange?: readonly [minX: number, maxX: number];
+}
+
+export interface AnnotationPointMarker {
+  readonly symbol?: ScatterSymbol;
+  /** Marker size in CSS pixels. */
+  readonly size?: number;
+  readonly style?: AnnotationStyle;
+}
+
+export interface AnnotationPoint {
+  readonly type: 'point';
+  readonly x: number;
+  readonly y: number;
+  readonly marker?: AnnotationPointMarker;
+}
+
+export interface AnnotationText {
+  readonly type: 'text';
+  readonly position: AnnotationPosition;
+  readonly text: string;
+}
+
+export interface AnnotationConfigBase {
+  /**
+   * Optional stable identifier for updates/diffing in userland.
+   * This is not interpreted by ChartGPU runtime yet (types only).
+   */
+  readonly id?: string;
+  readonly layer?: AnnotationLayer;
+  readonly style?: AnnotationStyle;
+  readonly label?: AnnotationLabel;
+}
+
+export type AnnotationConfig = (AnnotationLineX | AnnotationLineY | AnnotationPoint | AnnotationText) &
+  AnnotationConfigBase;
+
 export interface ChartGPUOptions {
   readonly grid?: GridConfig;
   readonly xAxis?: AxisConfig;
   readonly yAxis?: AxisConfig;
   readonly dataZoom?: ReadonlyArray<DataZoomConfig>;
   readonly series?: ReadonlyArray<SeriesConfig>;
+  readonly annotations?: ReadonlyArray<AnnotationConfig>;
   /**
    * When true, the chart may automatically keep the view anchored to the latest data while streaming.
    * Default: false.

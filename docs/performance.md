@@ -92,9 +92,19 @@ Enable interactive zoom with data-driven resampling by providing `dataZoom` arra
 
 ### Axis Bounds Behavior
 
-**Critical:** Axis auto-bounds are derived from **raw (unsampled)** data, not sampled points. This ensures sampling cannot clip outliers or shrink visible range.
+**Critical (global vs visible):**
+- **`yAxis.autoBounds: 'global'`** uses **raw (unsampled)** per-series bounds (computed once during option resolution / maintained during `appendData`). This ensures sampling cannot clip outliers.
+- **`yAxis.autoBounds: 'visible'` (default)** uses the **current render-series (sliced/sampled for the visible x-window)** to compute y-bounds. This keeps the y-axis tightly fit to what’s actually being rendered, and avoids scanning the full dataset.
 
-Override with explicit bounds if needed by providing `xAxis: { min, max }` or `yAxis: { min, max }` in chart options. See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts) for bounds derivation logic.
+**Y-axis auto-bounds during x-zoom:**
+- **Default (`yAxis.autoBounds: 'visible'`)**: Y-axis rescales to visible data within the current x-zoom window. Provides intuitive "auto-fit" behavior when zooming.
+- **Opt-out (`yAxis.autoBounds: 'global'`)**: Y-axis uses full dataset bounds regardless of x-zoom. Useful for fixed-scale comparisons.
+- **Performance**:
+  - Visible y-bounds are computed from `renderSeries` (already sliced/sampled for the visible x-range), so the work is proportional to rendered points, not total dataset size.
+  - Slicing + visible-bounds recompute is **coalesced to at most once per rendered frame** during continuous zoom/pan gestures (avoids repeated O(n) work within a single frame).
+  - Visible-bounds scans are **skipped entirely** when `yAxis.autoBounds: 'global'` or when both `yAxis.min` and `yAxis.max` are explicitly set.
+
+Override with explicit bounds if needed by providing `xAxis: { min, max }` or `yAxis: { min, max }` in chart options. Explicit bounds always take precedence over auto-bounds. See [`createRenderCoordinator.ts`](../src/core/createRenderCoordinator.ts) for bounds derivation logic.
 
 ## Real-Time Streaming Best Practices
 
@@ -238,6 +248,14 @@ See [`ChartGPU.ts`](../src/ChartGPU.ts) for disposal implementation.
 
 **Minimum buffer size:** 4 bytes (WebGPU requirement)
 
+### Time Axis Precision (Epoch-ms)
+
+WebGPU vertex buffers use **Float32**. Very large absolute x-values (notably **epoch-millisecond timestamps** around \(10^{12}\)) can lose precision when stored directly, which can manifest as visual instability (e.g. shimmer/jitter) during zoom.
+
+ChartGPU mitigates this internally by **rebasing** time-axis x-values per series before uploading to the GPU (store \(x' = x - xOffset\) and fold `xOffset` back into the CPU-side transform). This behavior is automatic and does not change your data units: you should continue to provide milliseconds for `xAxis.type: 'time'`.
+
+If you manually pre-pack timestamps into a `Float32Array` before handing data to ChartGPU (e.g. via worker helpers), be aware that converting epoch-ms to Float32 **before** rebasing can still quantize away sub-minute resolution. Prefer passing `DataPoint[]` (numbers) or higher-precision sources so ChartGPU can apply rebasing before Float32 conversion.
+
 ### Device Loss Handling
 
 **GPU device can be lost due to:**
@@ -340,7 +358,7 @@ See [`docs/internal/GPU_TIMING_IMPLEMENTATION.md`](./internal/GPU_TIMING_IMPLEME
 - Tooltip: disabled (`tooltip: { show: false }`)
 
 **Why these settings:**
-- Explicit domains prevent auto-bounds recomputation overhead
+- Explicit domains (or `yAxis.autoBounds: 'global'`) reduce auto-bounds recomputation overhead during zoom/pan (though the default `'visible'` mode is already well-optimized via caching)
 - Disabled animation/tooltip reduce measurement noise
 - Deterministic data ensures reproducible results
 

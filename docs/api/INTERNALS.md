@@ -188,7 +188,9 @@ See [render-coordinator-summary.md](render-coordinator-summary.md) for the essen
 - **Layout**: computes `GridArea` from resolved grid margins and canvas size.
   - **Robustness**: `GridArea.canvasWidth` / `GridArea.canvasHeight` (device pixels) are clamped to at least `1` to tolerate temporarily 0-sized canvases (e.g. during layout).
   - **DPR handling**: `GridArea.devicePixelRatio` is part of the type (for CSS→device conversion). The coordinator validates it (fallback `1`), and several renderers defensively treat missing/invalid DPR as `1`.
-- **Scales**: derives `xScale`/`yScale` in clip space; respects explicit axis `min`/`max` overrides and otherwise falls back to global series bounds.
+- **Scales**: derives `xScale`/`yScale` in clip space; respects explicit axis `min`/`max` overrides.
+  - When axis bounds are not explicitly set, the coordinator derives bounds from series data.
+  - For the y-axis, bounds derivation follows `yAxis.autoBounds` (`'visible'` vs `'global'`) when x-axis zoom is active.
 - **Orchestration order**: clear → grid → area fills → bars → scatter → line strokes → hover highlight → axes → crosshair.
 - **Interaction overlays (internal)**: the render coordinator creates an internal [event manager](#event-manager-internal), an internal [crosshair renderer](#crosshair-renderer-internal--contributor-notes), and an internal [highlight renderer](#highlight-renderer-internal--contributor-notes). Pointer `mousemove`/`mouseleave` updates interaction state and toggles overlay visibility; when provided, `callbacks.onRequestRender?.()` is used so pointer movement schedules renders in render-on-demand systems (e.g. `ChartGPU`).
 - **Pointer coordinate contract (high-level)**: the crosshair `prepare(...)` path expects **canvas-local CSS pixels** (`EventManager` payload `x`/`y`). See [`createEventManager.ts`](../../src/interaction/createEventManager.ts) and [`createCrosshairRenderer.ts`](../../src/renderers/createCrosshairRenderer.ts).

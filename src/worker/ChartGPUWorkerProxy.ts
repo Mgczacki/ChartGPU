@@ -50,6 +50,7 @@ import type {
   TooltipUpdateMessage,
   LegendUpdateMessage,
   AxisLabelsUpdateMessage,
+  AnnotationsUpdateMessage,
 } from './protocol';
 import type { WorkerConfig, PendingRequest, StrideBytes } from './types';
 import { ChartGPUWorkerError, XY_STRIDE, OHLC_STRIDE } from './types';
@@ -104,7 +105,7 @@ function serializeDataPoints(
   }
 
   // Detect point type from first element
-  const firstPoint = points[0];
+  const firstPoint = points[0]!;
   const isOHLC = Array.isArray(firstPoint)
     ? firstPoint.length === 5
     : 'timestamp' in firstPoint && 'open' in firstPoint;
@@ -165,6 +166,7 @@ type PendingOverlayUpdates = {
   tooltip?: TooltipUpdateMessage;
   legend?: LegendUpdateMessage;
   axisLabels?: AxisLabelsUpdateMessage;
+  annotations?: AnnotationsUpdateMessage;
 };
 
 /**
@@ -275,6 +277,7 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
   private tooltip: Tooltip | null = null;
   private legend: Legend | null = null;
   private textOverlay: TextOverlay | null = null;
+  private annotationTextOverlay: TextOverlay | null = null;
   private dataZoomSlider: DataZoomSlider | null = null;
   private dataZoomSliderHost: HTMLDivElement | null = null;
   private zoomState: ZoomState | null = null;
@@ -322,6 +325,7 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
   private dprMediaQuery: MediaQueryList | null = null;
   private boundDprChangeHandler: ((e: MediaQueryListEvent) => void) | null = null;
   private pendingResize: { width: number; height: number } | null = null;
+  private lastObservedCssSize: { width: number; height: number } | null = null;
   private resizeRafId: number | null = null;
   
   /**
@@ -488,11 +492,6 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
           const computed = computePointerEventData(this.pendingMoveEvent, canvas, this.cachedOptions);
           this.pendingMoveEvent = null;
           
-          console.log('[ChartGPUWorkerProxy] Sending move event:', {
-            gridX: computed.gridX,
-            gridY: computed.gridY,
-            isInGrid: computed.isInGrid,
-          });
           this.sendMessage({
             type: 'forwardPointerEvent',
             chartId: this.chartId,
@@ -529,11 +528,6 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
           
           const computed = computePointerEventData(e, canvas, this.cachedOptions);
           
-          console.log('[ChartGPUWorkerProxy] Sending click event:', {
-            gridX: computed.gridX,
-            gridY: computed.gridY,
-            isInGrid: computed.isInGrid,
-          });
           this.sendMessage({
             type: 'forwardPointerEvent',
             chartId: this.chartId,
@@ -691,8 +685,10 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
     if (this.isDisposed) return;
     
     // Track last known dimensions to avoid no-op resizes
-    let lastWidth = canvas.clientWidth;
-    let lastHeight = canvas.clientHeight;
+    const initialRect = canvas.getBoundingClientRect();
+    let lastWidth = initialRect.width;
+    let lastHeight = initialRect.height;
+    this.lastObservedCssSize = { width: lastWidth, height: lastHeight };
     
     this.resizeObserver = new ResizeObserver((entries) => {
       if (this.isDisposed) return;
@@ -700,11 +696,11 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
       
       // CRITICAL: After transferControlToOffscreen(), canvas.clientWidth/Height are invalid!
       // Use contentBoxSize from ResizeObserverEntry instead
-      const contentBoxSize = entries[0].contentBoxSize?.[0];
-      if (!contentBoxSize) return;
-      
-      const newWidth = contentBoxSize.inlineSize;
-      const newHeight = contentBoxSize.blockSize;
+      const entry = entries[0];
+      const contentBoxSize = Array.isArray(entry.contentBoxSize) ? entry.contentBoxSize[0] : entry.contentBoxSize;
+      const newWidth = contentBoxSize?.inlineSize ?? entry.contentRect.width;
+      const newHeight = contentBoxSize?.blockSize ?? entry.contentRect.height;
+      if (!Number.isFinite(newWidth) || !Number.isFinite(newHeight)) return;
       
       // Check if dimensions actually changed (ResizeObserver can fire on layout shifts)
       if (newWidth === lastWidth && newHeight === lastHeight) {
@@ -713,6 +709,7 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
       
       lastWidth = newWidth;
       lastHeight = newHeight;
+      this.lastObservedCssSize = { width: newWidth, height: newHeight };
       
       // Store pending dimensions and schedule RAF if not already scheduled
       this.pendingResize = { width: newWidth, height: newHeight };
@@ -784,14 +781,16 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
       const canvas = this.container.querySelector('canvas');
       if (!canvas) return;
 
-      const width = canvas.clientWidth;
-      const height = canvas.clientHeight;
+      const size = this.lastObservedCssSize ?? (() => {
+        const rect = canvas.getBoundingClientRect();
+        return { width: rect.width, height: rect.height };
+      })();
 
       this.sendMessage({
         type: 'resize',
         chartId: this.chartId,
-        width: Math.max(1, width),   // CSS pixels
-        height: Math.max(1, height), // CSS pixels
+        width: Math.max(1, size.width),   // CSS pixels
+        height: Math.max(1, size.height), // CSS pixels
         devicePixelRatio: this.currentDpr,
         requestRender: true,
       });
@@ -818,6 +817,7 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
     
     // Clear pending resize state
     this.pendingResize = null;
+    this.lastObservedCssSize = null;
     
     // Remove DPR media query listener
     if (this.dprMediaQuery && this.boundDprChangeHandler) {
@@ -843,6 +843,10 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
     
     // Always create text overlay (for axis labels)
     this.textOverlay = createTextOverlay(this.container);
+
+    // Dedicated annotation overlay (separate from axis labels)
+    // so clearing/updating annotations never affects axis label rendering.
+    this.annotationTextOverlay = createTextOverlay(this.container);
     
     // Always create legend (worker will send updates if needed)
     // Default position is 'right' - worker may override via messages
@@ -1037,6 +1041,9 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
     
     this.textOverlay?.dispose();
     this.textOverlay = null;
+
+    this.annotationTextOverlay?.dispose();
+    this.annotationTextOverlay = null;
     
     this.dataZoomSlider?.dispose();
     this.dataZoomSlider = null;
@@ -1076,7 +1083,12 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
    * Applies all pending overlay updates in a single batch.
    */
   private applyPendingOverlayUpdates(): void {
-    const { tooltip: tooltipMsg, legend: legendMsg, axisLabels: axisLabelsMsg } = this.pendingOverlayUpdates;
+    const {
+      tooltip: tooltipMsg,
+      legend: legendMsg,
+      axisLabels: axisLabelsMsg,
+      annotations: annotationsMsg,
+    } = this.pendingOverlayUpdates;
     
     // Apply tooltip update
     if (tooltipMsg && this.tooltip) {
@@ -1113,6 +1125,29 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
         axisLabelsMsg.yLabels,
         themeConfig
       );
+    }
+
+    // Apply annotation labels update
+    if (annotationsMsg && this.annotationTextOverlay) {
+      this.annotationTextOverlay.clear();
+
+      for (const label of annotationsMsg.labels) {
+        const span = this.annotationTextOverlay.addLabel(label.text, label.x, label.y, {
+          anchor: label.anchor,
+          fontSize: label.fontSize,
+          color: label.color,
+        });
+
+        const bg = label.background;
+        if (bg) {
+          span.style.background = bg.backgroundColor;
+          if (bg.borderRadius != null) span.style.borderRadius = `${bg.borderRadius}px`;
+          if (bg.padding) {
+            const [t, r, b, l] = bg.padding;
+            span.style.padding = `${t}px ${r}px ${b}px ${l}px`;
+          }
+        }
+      }
     }
     
     // Clear pending updates
@@ -1507,7 +1542,7 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
       type: 'setInteractionX',
       chartId: this.chartId,
       x,
-      source: source as string | undefined,
+      source: typeof source === 'string' ? source : undefined,
     });
   }
   
@@ -1767,6 +1802,10 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
       case 'axisLabelsUpdate':
         this.handleAxisLabelsUpdateMessage(message);
         break;
+
+      case 'annotationsUpdate':
+        this.handleAnnotationsUpdateMessage(message);
+        break;
       
       case 'hoverChange':
         this.handleHoverChangeMessage(message);
@@ -2001,6 +2040,15 @@ export class ChartGPUWorkerProxy implements ChartGPUInstance {
    */
   private handleAxisLabelsUpdateMessage(message: AxisLabelsUpdateMessage): void {
     this.pendingOverlayUpdates.axisLabels = message;
+    this.scheduleOverlayUpdates();
+  }
+
+  /**
+   * Handles annotation labels update messages from worker.
+   * Batches updates via RAF to prevent layout thrashing.
+   */
+  private handleAnnotationsUpdateMessage(message: AnnotationsUpdateMessage): void {
+    this.pendingOverlayUpdates.annotations = message;
     this.scheduleOverlayUpdates();
   }
 

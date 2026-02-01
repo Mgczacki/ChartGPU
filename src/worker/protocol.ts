@@ -40,6 +40,7 @@ import type {
   TooltipData,
   LegendItem,
   AxisLabel,
+  AnnotationLabelData,
   PerformanceMetrics,
   PerformanceCapabilities,
 } from '../config/types';
@@ -294,6 +295,16 @@ export interface AxisLabelsUpdateMessage {
 }
 
 /**
+ * Annotation labels update.
+ * Emitted when annotation label positions or styles change.
+ */
+export interface AnnotationsUpdateMessage {
+  readonly type: 'annotationsUpdate';
+  readonly chartId: string;
+  readonly labels: ReadonlyArray<AnnotationLabelData>;
+}
+
+/**
  * Worker event payload for hover and click events.
  * Note: Cannot include PointerEvent (not cloneable for postMessage).
  */
@@ -422,6 +433,7 @@ export type WorkerOutboundMessage =
   | TooltipUpdateMessage
   | LegendUpdateMessage
   | AxisLabelsUpdateMessage
+  | AnnotationsUpdateMessage
   | HoverChangeMessage
   | ClickMessage
   | CrosshairMoveMessage

@@ -1,5 +1,10 @@
 import type {
   AreaStyleConfig,
+  AnnotationConfig,
+  AnnotationLabel,
+  AnnotationLabelAnchor,
+  AnnotationLabelBackground,
+  AnnotationPointMarker,
   AxisConfig,
   CandlestickItemStyleConfig,
   CandlestickSeriesConfig,
@@ -18,6 +23,7 @@ import type {
   PieDataItem,
   PieSeriesConfig,
   ScatterSeriesConfig,
+  ScatterSymbol,
   SeriesSampling,
 } from './types';
 import {
@@ -167,6 +173,7 @@ export interface ResolvedChartGPUOptions
   readonly theme: ThemeConfig;
   readonly palette: ReadonlyArray<string>;
   readonly series: ReadonlyArray<ResolvedSeriesConfig>;
+  readonly annotations?: ReadonlyArray<AnnotationConfig>;
 }
 
 const sanitizeDataZoom = (input: unknown): ReadonlyArray<DataZoomConfig> | undefined => {
@@ -199,6 +206,241 @@ const sanitizeDataZoom = (input: unknown): ReadonlyArray<DataZoomConfig> | undef
     out.push({ type, xAxisIndex, start, end, minSpan, maxSpan });
   }
 
+  return out;
+};
+
+const sanitizeAnnotations = (input: unknown): ReadonlyArray<AnnotationConfig> | undefined => {
+  if (!Array.isArray(input)) return undefined;
+
+  const out: AnnotationConfig[] = [];
+
+  const isLabelAnchor = (v: unknown): v is AnnotationLabelAnchor =>
+    v === 'start' || v === 'center' || v === 'end';
+
+  const isScatterSymbol = (v: unknown): v is ScatterSymbol =>
+    v === 'circle' || v === 'rect' || v === 'triangle';
+
+  const sanitizeString = (v: unknown): string | undefined => {
+    if (typeof v !== 'string') return undefined;
+    const t = v.trim();
+    return t.length > 0 ? t : undefined;
+  };
+
+  const sanitizeFiniteNumber = (v: unknown): number | undefined =>
+    typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+
+  const sanitizeOpacity01 = (v: unknown): number | undefined => {
+    const n = sanitizeFiniteNumber(v);
+    if (n == null) return undefined;
+    return Math.min(1, Math.max(0, n));
+  };
+
+  const sanitizeLineDash = (v: unknown): readonly number[] | undefined => {
+    if (!Array.isArray(v)) return undefined;
+    const cleaned = v
+      .filter((x): x is number => typeof x === 'number' && Number.isFinite(x))
+      .map((x) => x);
+    if (cleaned.length === 0) return undefined;
+    Object.freeze(cleaned);
+    return cleaned;
+  };
+
+  const sanitizePadding = (v: unknown): number | readonly [number, number, number, number] | undefined => {
+    if (typeof v === 'number' && Number.isFinite(v)) return v;
+    if (!Array.isArray(v) || v.length !== 4) return undefined;
+    const t = sanitizeFiniteNumber(v[0]);
+    const r = sanitizeFiniteNumber(v[1]);
+    const b = sanitizeFiniteNumber(v[2]);
+    const l = sanitizeFiniteNumber(v[3]);
+    if (t == null || r == null || b == null || l == null) return undefined;
+    return [t, r, b, l] as const;
+  };
+
+  for (const item of input) {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) continue;
+    const record = item as Record<string, unknown>;
+
+    const type = record.type;
+    if (type !== 'lineX' && type !== 'lineY' && type !== 'point' && type !== 'text') continue;
+
+    const id = sanitizeString(record.id);
+    const layerRaw = record.layer;
+    const layer = layerRaw === 'belowSeries' || layerRaw === 'aboveSeries' ? layerRaw : undefined;
+
+    const styleRaw = record.style;
+    const style =
+      styleRaw && typeof styleRaw === 'object' && !Array.isArray(styleRaw)
+        ? (() => {
+            const s = styleRaw as Record<string, unknown>;
+            const color = sanitizeString(s.color);
+            const lineWidth = sanitizeFiniteNumber(s.lineWidth);
+            const lineDash = sanitizeLineDash(s.lineDash);
+            const opacity = sanitizeOpacity01(s.opacity);
+            const next: Record<string, unknown> = {
+              ...(color ? { color } : {}),
+              ...(lineWidth != null ? { lineWidth } : {}),
+              ...(lineDash ? { lineDash } : {}),
+              ...(opacity != null ? { opacity } : {}),
+            };
+            return Object.keys(next).length > 0 ? (next as AnnotationConfig['style']) : undefined;
+          })()
+        : undefined;
+
+    const labelRaw = record.label;
+    const label =
+      labelRaw && typeof labelRaw === 'object' && !Array.isArray(labelRaw)
+        ? (() => {
+            const l = labelRaw as Record<string, unknown>;
+            const text = sanitizeString(l.text);
+            const template = sanitizeString(l.template);
+            const decimalsRaw = l.decimals;
+            const decimals =
+              typeof decimalsRaw === 'number' && Number.isFinite(decimalsRaw) && decimalsRaw >= 0
+                ? Math.min(20, Math.floor(decimalsRaw))
+                : undefined;
+            const offsetRaw = l.offset;
+            const offset =
+              Array.isArray(offsetRaw) &&
+              offsetRaw.length === 2 &&
+              typeof offsetRaw[0] === 'number' &&
+              Number.isFinite(offsetRaw[0]) &&
+              typeof offsetRaw[1] === 'number' &&
+              Number.isFinite(offsetRaw[1])
+                ? ([offsetRaw[0], offsetRaw[1]] as const)
+                : undefined;
+            const anchorRaw = l.anchor;
+            const anchor = isLabelAnchor(anchorRaw) ? anchorRaw : undefined;
+            const bgRaw = l.background;
+            const background =
+              bgRaw && typeof bgRaw === 'object' && !Array.isArray(bgRaw)
+                ? (() => {
+                    const bg = bgRaw as Record<string, unknown>;
+                    const color = sanitizeString(bg.color);
+                    const opacity = sanitizeOpacity01(bg.opacity);
+                    const padding = sanitizePadding(bg.padding);
+                    const borderRadius = sanitizeFiniteNumber(bg.borderRadius);
+                    const next: AnnotationLabelBackground = {
+                      ...(color ? { color } : {}),
+                      ...(opacity != null ? { opacity } : {}),
+                      ...(padding != null ? { padding } : {}),
+                      ...(borderRadius != null ? { borderRadius } : {}),
+                    };
+                    return Object.keys(next).length > 0 ? next : undefined;
+                  })()
+                : undefined;
+
+            const next: AnnotationLabel = {
+              ...(text ? { text } : {}),
+              ...(template ? { template } : {}),
+              ...(decimals != null ? { decimals } : {}),
+              ...(offset ? { offset } : {}),
+              ...(anchor ? { anchor } : {}),
+              ...(background ? { background } : {}),
+            };
+
+            return Object.keys(next).length > 0 ? next : undefined;
+          })()
+        : undefined;
+
+    if (type === 'lineX') {
+      const x = sanitizeFiniteNumber(record.x);
+      if (x == null) continue;
+      const base: AnnotationConfig = { type: 'lineX', x, ...(id ? { id } : {}), ...(layer ? { layer } : {}), ...(style ? { style } : {}), ...(label ? { label } : {}) };
+      out.push(base);
+      continue;
+    }
+
+    if (type === 'lineY') {
+      const y = sanitizeFiniteNumber(record.y);
+      if (y == null) continue;
+      const base: AnnotationConfig = { type: 'lineY', y, ...(id ? { id } : {}), ...(layer ? { layer } : {}), ...(style ? { style } : {}), ...(label ? { label } : {}) };
+      out.push(base);
+      continue;
+    }
+
+    if (type === 'point') {
+      const x = sanitizeFiniteNumber(record.x);
+      const y = sanitizeFiniteNumber(record.y);
+      if (x == null || y == null) continue;
+      const markerRaw = record.marker;
+      const marker =
+        markerRaw && typeof markerRaw === 'object' && !Array.isArray(markerRaw)
+          ? (() => {
+              const m = markerRaw as Record<string, unknown>;
+              const symbolRaw = m.symbol;
+              const symbol = isScatterSymbol(symbolRaw) ? symbolRaw : undefined;
+              const size = sanitizeFiniteNumber(m.size);
+              const mStyleRaw = m.style;
+              const mStyle =
+                mStyleRaw && typeof mStyleRaw === 'object' && !Array.isArray(mStyleRaw)
+                  ? (() => {
+                      const s = mStyleRaw as Record<string, unknown>;
+                      const color = sanitizeString(s.color);
+                      const opacity = sanitizeOpacity01(s.opacity);
+                      const lineWidth = sanitizeFiniteNumber(s.lineWidth);
+                      const lineDash = sanitizeLineDash(s.lineDash);
+                      const next: Record<string, unknown> = {
+                        ...(color ? { color } : {}),
+                        ...(opacity != null ? { opacity } : {}),
+                        ...(lineWidth != null ? { lineWidth } : {}),
+                        ...(lineDash ? { lineDash } : {}),
+                      };
+                      return Object.keys(next).length > 0 ? (next as AnnotationConfig['style']) : undefined;
+                    })()
+                  : undefined;
+              const next: AnnotationPointMarker = {
+                ...(symbol ? { symbol } : {}),
+                ...(size != null ? { size } : {}),
+                ...(mStyle ? { style: mStyle } : {}),
+              };
+              return Object.keys(next).length > 0 ? next : undefined;
+            })()
+          : undefined;
+
+      const base: AnnotationConfig = {
+        type: 'point',
+        x,
+        y,
+        ...(marker ? { marker } : {}),
+        ...(id ? { id } : {}),
+        ...(layer ? { layer } : {}),
+        ...(style ? { style } : {}),
+        ...(label ? { label } : {}),
+      };
+      out.push(base);
+      continue;
+    }
+
+    // type === 'text'
+    {
+      const positionRaw = record.position;
+      const text = sanitizeString(record.text);
+      if (!text) continue;
+      if (!positionRaw || typeof positionRaw !== 'object' || Array.isArray(positionRaw)) continue;
+      const p = positionRaw as Record<string, unknown>;
+      const space = p.space;
+      if (space !== 'data' && space !== 'plot') continue;
+      const x = sanitizeFiniteNumber(p.x);
+      const y = sanitizeFiniteNumber(p.y);
+      if (x == null || y == null) continue;
+      const position = { space, x, y } as const;
+
+      const base: AnnotationConfig = {
+        type: 'text',
+        position,
+        text,
+        ...(id ? { id } : {}),
+        ...(layer ? { layer } : {}),
+        ...(style ? { style } : {}),
+        ...(label ? { label } : {}),
+      };
+      out.push(base);
+      continue;
+    }
+  }
+
+  if (out.length === 0) return undefined;
+  Object.freeze(out);
   return out;
 };
 
@@ -327,23 +569,49 @@ const normalizeSamplingThreshold = (value: unknown): number | undefined => {
   return t > 0 ? t : undefined;
 };
 
+const normalizeAxisAutoBounds = (value: unknown): AxisConfig['autoBounds'] | undefined => {
+  if (typeof value !== 'string') return undefined;
+  const v = value.trim().toLowerCase();
+  return v === 'global' || v === 'visible' ? (v as AxisConfig['autoBounds']) : undefined;
+};
+
 const isTupleDataPoint = (p: DataPoint): p is DataPointTuple => Array.isArray(p);
 
 const computeRawBoundsFromData = (data: ReadonlyArray<DataPoint>): RawBounds | undefined => {
+  if (data.length === 0) return undefined;
+
   let xMin = Number.POSITIVE_INFINITY;
   let xMax = Number.NEGATIVE_INFINITY;
   let yMin = Number.POSITIVE_INFINITY;
   let yMax = Number.NEGATIVE_INFINITY;
 
-  for (let i = 0; i < data.length; i++) {
-    const p = data[i]!;
-    const x = isTupleDataPoint(p) ? p[0] : p.x;
-    const y = isTupleDataPoint(p) ? p[1] : p.y;
-    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-    if (x < xMin) xMin = x;
-    if (x > xMax) xMax = x;
-    if (y < yMin) yMin = y;
-    if (y > yMax) yMax = y;
+  // Hoist tuple-vs-object detection once (assume homogeneous arrays).
+  const isTuple = isTupleDataPoint(data[0]!);
+
+  if (isTuple) {
+    const dataAsTuples = data as ReadonlyArray<DataPointTuple>;
+    for (let i = 0; i < dataAsTuples.length; i++) {
+      const p = dataAsTuples[i]!;
+      const x = p[0];
+      const y = p[1];
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      if (x < xMin) xMin = x;
+      if (x > xMax) xMax = x;
+      if (y < yMin) yMin = y;
+      if (y > yMax) yMax = y;
+    }
+  } else {
+    const dataAsObjects = data as ReadonlyArray<Exclude<DataPoint, DataPointTuple>>;
+    for (let i = 0; i < dataAsObjects.length; i++) {
+      const p = dataAsObjects[i]!;
+      const x = p.x;
+      const y = p.y;
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      if (x < xMin) xMin = x;
+      if (x > xMax) xMax = x;
+      if (y < yMin) yMin = y;
+      if (y > yMax) yMax = y;
+    }
   }
 
   if (!Number.isFinite(xMin) || !Number.isFinite(xMax) || !Number.isFinite(yMin) || !Number.isFinite(yMax)) {
@@ -490,6 +758,9 @@ export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChart
         ...userOptions.xAxis,
         // runtime safety for JS callers
         type: (userOptions.xAxis as unknown as Partial<AxisConfig>).type ?? defaultOptions.xAxis.type,
+        autoBounds:
+          normalizeAxisAutoBounds((userOptions.xAxis as unknown as { readonly autoBounds?: unknown }).autoBounds) ??
+          (defaultOptions.xAxis as AxisConfig).autoBounds,
       }
     : { ...defaultOptions.xAxis };
 
@@ -499,6 +770,9 @@ export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChart
         ...userOptions.yAxis,
         // runtime safety for JS callers
         type: (userOptions.yAxis as unknown as Partial<AxisConfig>).type ?? defaultOptions.yAxis.type,
+        autoBounds:
+          normalizeAxisAutoBounds((userOptions.yAxis as unknown as { readonly autoBounds?: unknown }).autoBounds) ??
+          defaultOptions.yAxis.autoBounds,
       }
     : { ...defaultOptions.yAxis };
 
@@ -683,6 +957,7 @@ export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChart
     yAxis,
     autoScroll,
     dataZoom: sanitizeDataZoom((userOptions as ChartGPUOptions).dataZoom),
+    annotations: sanitizeAnnotations((userOptions as ChartGPUOptions).annotations),
     animation,
     theme,
     palette: theme.colorPalette,

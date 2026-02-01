@@ -4,7 +4,7 @@
  * custom render loop, sampling strategies, and GPU timing probes.
  */
 import { GPUContext, resolveOptions } from '../../src/index';
-import type { ChartGPUOptions, DataPoint, SeriesSampling } from '../../src/index';
+import type { ChartGPUOptions, DataPoint, ResolvedChartGPUOptions, SeriesSampling } from '../../src/index';
 import { createRenderCoordinator } from '../../src/core/createRenderCoordinator';
 import type { RenderCoordinator } from '../../src/core/createRenderCoordinator';
 import { createDataZoomSlider } from '../../src/components/createDataZoomSlider';
@@ -204,9 +204,11 @@ async function main(): Promise<void> {
 
   const samplingEnabledEl = document.getElementById('samplingEnabled');
   const benchmarkModeEl = document.getElementById('benchmarkMode');
+  const autoBoundsVisibleEl = document.getElementById('autoBoundsVisible');
   const resetZoomEl = document.getElementById('resetZoom');
   if (!(samplingEnabledEl instanceof HTMLInputElement)) throw new Error('samplingEnabled checkbox not found');
   if (!(benchmarkModeEl instanceof HTMLInputElement)) throw new Error('benchmarkMode checkbox not found');
+  if (!(autoBoundsVisibleEl instanceof HTMLInputElement)) throw new Error('autoBoundsVisible checkbox not found');
   if (!(resetZoomEl instanceof HTMLButtonElement)) throw new Error('resetZoom button not found');
 
   // Ensure numeric readout is consistent (HTML already sets this, but keep it robust).
@@ -230,12 +232,12 @@ async function main(): Promise<void> {
 
   let zoomRange: ZoomRange | null = null;
 
-  const { data, yMin, yMax } = createMillionPointsData();
+  const { data } = createMillionPointsData();
 
-  const createUserOptions = (sampling: SeriesSampling): ChartGPUOptions => ({
+  const createUserOptions = (sampling: SeriesSampling, autoBounds: 'visible' | 'global'): ChartGPUOptions => ({
     grid: { left: 70, right: 24, top: 24, bottom: 44 },
     xAxis: { type: 'value', min: 0, max: X_MAX, name: 'Index' },
-    yAxis: { type: 'value', min: yMin, max: yMax, name: 'Value' },
+    yAxis: { type: 'value', autoBounds, name: 'Value' },
     tooltip: { show: false },
     dataZoom: [{ type: 'inside' }, { type: 'slider' }],
     palette: ['#4a9eff'],
@@ -253,9 +255,23 @@ async function main(): Promise<void> {
     ],
   });
 
+  const applyAutoBounds = (
+    resolved: ResolvedChartGPUOptions,
+    autoBounds: 'visible' | 'global'
+  ): ResolvedChartGPUOptions => {
+    if ((resolved.yAxis.autoBounds ?? 'visible') === autoBounds) return resolved;
+    return { ...resolved, yAxis: { ...resolved.yAxis, autoBounds } };
+  };
+
+  // Pre-resolve both sampling modes once (avoids re-scanning 1M points on UI toggles).
+  const resolvedOptionsBySampling: Record<'lttb' | 'none', ResolvedChartGPUOptions> = {
+    lttb: resolveOptionsForBenchmark(createUserOptions('lttb', 'global')),
+    none: resolveOptionsForBenchmark(createUserOptions('none', 'global')),
+  };
+
   let samplingMode: SeriesSampling = samplingEnabledEl.checked ? 'lttb' : 'none';
-  let userOptions: ChartGPUOptions = createUserOptions(samplingMode);
-  let resolvedOptions = resolveOptionsForBenchmark(userOptions);
+  let autoBoundsMode: 'visible' | 'global' = autoBoundsVisibleEl.checked ? 'visible' : 'global';
+  let resolvedOptions = applyAutoBounds(resolvedOptionsBySampling[samplingMode], autoBoundsMode);
 
   const ensureSliderHost = (): HTMLDivElement => {
     if (sliderHost) return sliderHost;
@@ -366,12 +382,9 @@ async function main(): Promise<void> {
     lastConfigured = { width: canvas.width, height: canvas.height, format: preferredFormat };
 
     if (coordinator && coordinatorTargetFormat !== preferredFormat) {
-      coordinator.dispose();
-      coordinator = createRenderCoordinator(gpuContext!, resolvedOptions, {
-        onRequestRender: requestRender,
-      });
+      // Recreate coordinator through the shared helper so we don't leak subscriptions/slider bindings.
       coordinatorTargetFormat = preferredFormat;
-      syncSliderUi();
+      recreateCoordinator();
     }
   };
 
@@ -569,8 +582,21 @@ async function main(): Promise<void> {
       if (nextSampling === samplingMode) return;
 
       samplingMode = nextSampling;
-      userOptions = createUserOptions(samplingMode);
-      resolvedOptions = resolveOptionsForBenchmark(userOptions);
+      resolvedOptions = applyAutoBounds(resolvedOptionsBySampling[samplingMode], autoBoundsMode);
+
+      const prevZoom = coordinator?.getZoomRange() ?? null;
+      coordinator?.setOptions(resolvedOptions);
+      if (prevZoom) coordinator?.setZoomRange(prevZoom.start, prevZoom.end);
+
+      slider?.update(resolvedOptions.theme);
+    });
+
+    autoBoundsVisibleEl.addEventListener('change', () => {
+      const nextAutoBounds: 'visible' | 'global' = autoBoundsVisibleEl.checked ? 'visible' : 'global';
+      if (nextAutoBounds === autoBoundsMode) return;
+
+      autoBoundsMode = nextAutoBounds;
+      resolvedOptions = applyAutoBounds(resolvedOptions, autoBoundsMode);
 
       const prevZoom = coordinator?.getZoomRange() ?? null;
       coordinator?.setOptions(resolvedOptions);

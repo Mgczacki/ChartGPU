@@ -62,7 +62,7 @@ export const scatterDefaults = {
 export const defaultOptions = {
   grid: defaultGrid,
   xAxis: { type: 'value' },
-  yAxis: { type: 'value' },
+  yAxis: { type: 'value', autoBounds: 'visible' },
   autoScroll: false,
   theme: 'dark',
   palette: defaultPalette,
