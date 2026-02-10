@@ -12,6 +12,8 @@ export type ChartGPUEventPayload = {
   /** Plot (grid) height in CSS pixels. */
   readonly plotHeightCss: number;
   readonly isInGrid: boolean;
+  /** When using facet panels, index of the cell under the pointer (undefined if none). */
+  readonly facetCellIndex?: number;
   readonly originalEvent: PointerEvent;
 };
 
@@ -22,6 +24,8 @@ export interface EventManager {
   on(event: ChartGPUEventName, callback: ChartGPUEventCallback): void;
   off(event: ChartGPUEventName, callback: ChartGPUEventCallback): void;
   updateGridArea(gridArea: GridArea): void;
+  /** When set, pointer payloads use the containing cell's area and set facetCellIndex. */
+  updateFacetCells(cells: ReadonlyArray<GridArea> | null): void;
   dispose(): void;
 }
 
@@ -40,6 +44,7 @@ const DEFAULT_TAP_MAX_TIME_MS = 500;
 export function createEventManager(canvas: HTMLCanvasElement, initialGridArea: GridArea): EventManager {
   let disposed = false;
   let gridArea = initialGridArea;
+  let facetCells: ReadonlyArray<GridArea> | null = null;
 
   const listeners: ListenerRegistry = {
     mousemove: new Set<ChartGPUEventCallback>(),
@@ -56,6 +61,59 @@ export function createEventManager(canvas: HTMLCanvasElement, initialGridArea: G
 
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
+
+    if (facetCells != null && facetCells.length > 0) {
+      // Use the same coordinate system as the coordinator: cell boundaries are in "canvas logical"
+      // space (canvasWidth/devicePixelRatio, canvasHeight/devicePixelRatio). Transform pointer
+      // from getBoundingClientRect() space to that logical space so hit-test matches drawn cells.
+      const dpr = gridArea.devicePixelRatio > 0 ? gridArea.devicePixelRatio : 1;
+      const logicalW = gridArea.canvasWidth / dpr;
+      const logicalH = gridArea.canvasHeight / dpr;
+      const scaleX = rect.width > 0 ? logicalW / rect.width : 1;
+      const scaleY = rect.height > 0 ? logicalH / rect.height : 1;
+      const xLogical = x * scaleX;
+      const yLogical = y * scaleY;
+
+      for (let i = 0; i < facetCells.length; i++) {
+        const cell = facetCells[i]!;
+        const plotLeftCss = cell.left;
+        const plotTopCss = cell.top;
+        const plotWidthCss = logicalW - cell.left - cell.right;
+        const plotHeightCss = logicalH - cell.top - cell.bottom;
+        const gridX = xLogical - plotLeftCss;
+        const gridY = yLogical - plotTopCss;
+        const isInCell =
+          plotWidthCss > 0 &&
+          plotHeightCss > 0 &&
+          gridX >= 0 &&
+          gridX <= plotWidthCss &&
+          gridY >= 0 &&
+          gridY <= plotHeightCss;
+        if (isInCell) {
+          return {
+            x,
+            y,
+            gridX,
+            gridY,
+            plotWidthCss,
+            plotHeightCss,
+            isInGrid: true,
+            facetCellIndex: i,
+            originalEvent: e,
+          };
+        }
+      }
+      return {
+        x,
+        y,
+        gridX: 0,
+        gridY: 0,
+        plotWidthCss: 0,
+        plotHeightCss: 0,
+        isInGrid: false,
+        originalEvent: e,
+      };
+    }
 
     const plotLeftCss = gridArea.left;
     const plotTopCss = gridArea.top;
@@ -190,6 +248,10 @@ export function createEventManager(canvas: HTMLCanvasElement, initialGridArea: G
     gridArea = nextGridArea;
   };
 
+  const updateFacetCells: EventManager['updateFacetCells'] = (cells: ReadonlyArray<GridArea> | null) => {
+    facetCells = cells;
+  };
+
   const dispose: EventManager['dispose'] = () => {
     if (disposed) return;
     disposed = true;
@@ -209,5 +271,5 @@ export function createEventManager(canvas: HTMLCanvasElement, initialGridArea: G
     listeners.mouseleave.clear();
   };
 
-  return { canvas, on, off, updateGridArea, dispose };
+  return { canvas, on, off, updateGridArea, updateFacetCells, dispose };
 }

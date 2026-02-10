@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Facet Scatter - ChartGPU</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { height: 100%; margin: 0; padding: 0; background-color: #0a0a0a; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+    .page { min-height: 100%; display: grid; grid-template-rows: auto auto auto; gap: 16px; padding: 20px; box-sizing: border-box; max-width: 1100px; margin: 0 auto; }
+    header h1 { margin: 0; font-size: 1.4rem; color: #fff; }
+    header p { margin: 8px 0 0; color: #aaa; line-height: 1.4; }
+    .chart-shell { border: 1px solid #333; border-radius: 12px; background: #0f0f14; overflow: hidden; min-height: 380px; height: min(55vh, 520px); }
+    .section-title { margin: 0 0 8px; padding: 12px 16px 0; font-size: 1rem; font-weight: 600; color: #ccc; }
+    .chart { width: 100%; height: 100%; min-height: 320px; }
+    .error { padding: 16px; color: #ffb4b4; white-space: pre-wrap; }
+    .back { display: inline-block; margin-top: 10px; color: #aaa; text-decoration: none; }
+    .back:hover { color: #fff; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header>
+      <h1>Facet Scatter</h1>
+      <p>Gráfico de puntos (scatter) con facetas: varios paneles por valor de columna (<code>facet.fx</code> horizontal, <code>facet.fy</code> vertical). Cada punto debe incluir la propiedad de faceta (ej. <code>region</code>).</p>
+      <a class="back" href="../index.html">← Back to examples</a>
+    </header>
+    <div class="chart-shell">
+      <h2 class="section-title">Scatter por región (<code>facet.fx</code>)</h2>
+      <div id="chart" class="chart"></div>
+      <div id="error" class="error" style="display:none;"></div>
+    </div>
+    <div class="chart-shell">
+      <h2 class="section-title">Scatter por región y trimestre (<code>facet.fx</code> + <code>facet.fy</code>)</h2>
+      <div id="chart-fxfy" class="chart"></div>
+      <div id="error-fxfy" class="error" style="display:none;"></div>
+    </div>
+  </div>
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>

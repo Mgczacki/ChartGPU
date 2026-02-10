@@ -12,9 +12,19 @@ export interface ScatterRenderer {
     data: ResolvedScatterSeriesConfig['data'],
     xScale: LinearScale,
     yScale: LinearScale,
-    gridArea?: GridArea
+    gridArea?: GridArea,
+    /** When provided (e.g. facet per-cell buffer), instance data is written here and used for the next render(buffer, count). */
+    externalBuffer?: GPUBuffer
+  ): number;
+  /** Updates only VS/FS uniforms (transform, viewport, color) for facet cells so each cell draws with its own scale. Call before render(buffer, count) in facet loop. */
+  setCellUniforms(
+    xScale: LinearScale,
+    yScale: LinearScale,
+    gridArea: GridArea,
+    seriesConfig: ResolvedScatterSeriesConfig
   ): void;
-  render(passEncoder: GPURenderPassEncoder): void;
+  /** When buffer/count are provided (e.g. facet), use them; otherwise use last prepare() state. */
+  render(passEncoder: GPURenderPassEncoder, buffer?: GPUBuffer, count?: number): void;
   dispose(): void;
 }
 
@@ -255,7 +265,7 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
     lastViewportPx = [w, h];
   };
 
-  const prepare: ScatterRenderer['prepare'] = (seriesConfig, data, xScale, yScale, gridArea) => {
+  const prepare: ScatterRenderer['prepare'] = (seriesConfig, data, xScale, yScale, gridArea, externalBuffer) => {
     assertNotDisposed();
 
     const { xMin, xMax, yMin, yMax } = computeDataBounds(data);
@@ -266,7 +276,10 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
       lastCanvasWidth = gridArea.canvasWidth;
       lastCanvasHeight = gridArea.canvasHeight;
       writeVsUniforms(ax, bx, ay, by, gridArea.canvasWidth, gridArea.canvasHeight);
-      lastScissor = computePlotScissorDevicePx(gridArea);
+      // When used inside a facet cell, gridArea is cell-local (left/right/top/bottom 0); do not set scissor so the coordinator's cell scissor stays in effect.
+      const isCellLocal =
+        gridArea.left === 0 && gridArea.right === 0 && gridArea.top === 0 && gridArea.bottom === 0;
+      lastScissor = isCellLocal ? null : computePlotScissorDevicePx(gridArea);
     } else {
       // Backward-compatible: keep rendering with the last known viewport (or safe default).
       writeVsUniforms(ax, bx, ay, by, lastViewportPx[0], lastViewportPx[1]);
@@ -318,6 +331,13 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
     instanceCount = outFloats / INSTANCE_STRIDE_FLOATS;
     const requiredBytes = Math.max(4, instanceCount * INSTANCE_STRIDE_BYTES);
 
+    if (externalBuffer) {
+      if (instanceCount > 0 && externalBuffer.size >= requiredBytes) {
+        device.queue.writeBuffer(externalBuffer, 0, cpuInstanceStagingBuffer, 0, instanceCount * INSTANCE_STRIDE_BYTES);
+      }
+      return instanceCount;
+    }
+
     if (!instanceBuffer || instanceBuffer.size < requiredBytes) {
       const grownBytes = Math.max(Math.max(4, nextPow2(requiredBytes)), instanceBuffer ? instanceBuffer.size : 0);
       if (instanceBuffer) {
@@ -337,11 +357,36 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
     if (instanceBuffer && instanceCount > 0) {
       device.queue.writeBuffer(instanceBuffer, 0, cpuInstanceStagingBuffer, 0, instanceCount * INSTANCE_STRIDE_BYTES);
     }
+    return instanceCount;
   };
 
-  const render: ScatterRenderer['render'] = (passEncoder) => {
+  const setCellUniforms: ScatterRenderer['setCellUniforms'] = (xScale, yScale, gridArea, seriesConfig) => {
     assertNotDisposed();
-    if (!instanceBuffer || instanceCount === 0) return;
+    const xMin = xScale.invert(-1);
+    const xMax = xScale.invert(1);
+    const yMin = yScale.invert(-1);
+    const yMax = yScale.invert(1);
+    const { a: ax, b: bx } = computeClipAffineFromScale(xScale, xMin, xMax);
+    const { a: ay, b: by } = computeClipAffineFromScale(yScale, yMin, yMax);
+    lastCanvasWidth = gridArea.canvasWidth;
+    lastCanvasHeight = gridArea.canvasHeight;
+    writeVsUniforms(ax, bx, ay, by, gridArea.canvasWidth, gridArea.canvasHeight);
+    const isCellLocal =
+      gridArea.left === 0 && gridArea.right === 0 && gridArea.top === 0 && gridArea.bottom === 0;
+    lastScissor = isCellLocal ? null : computePlotScissorDevicePx(gridArea);
+    const [r, g, b, a] = parseSeriesColorToRgba01(seriesConfig.color);
+    fsUniformScratchF32[0] = r;
+    fsUniformScratchF32[1] = g;
+    fsUniformScratchF32[2] = b;
+    fsUniformScratchF32[3] = clamp01(a);
+    writeUniformBuffer(device, fsUniformBuffer, fsUniformScratchF32);
+  };
+
+  const render: ScatterRenderer['render'] = (passEncoder, buffer, count) => {
+    assertNotDisposed();
+    const drawBuffer = buffer ?? instanceBuffer;
+    const drawCount = count ?? instanceCount;
+    if (!drawBuffer || drawCount === 0) return;
 
     // Clip to plot area when available.
     if (lastScissor && lastCanvasWidth > 0 && lastCanvasHeight > 0) {
@@ -350,8 +395,8 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
 
     passEncoder.setPipeline(pipeline);
     passEncoder.setBindGroup(0, bindGroup);
-    passEncoder.setVertexBuffer(0, instanceBuffer);
-    passEncoder.draw(6, instanceCount);
+    passEncoder.setVertexBuffer(0, drawBuffer);
+    passEncoder.draw(6, drawCount);
 
     // Reset scissor to full canvas to avoid impacting later renderers.
     if (lastScissor && lastCanvasWidth > 0 && lastCanvasHeight > 0) {
@@ -390,6 +435,6 @@ export function createScatterRenderer(device: GPUDevice, options?: ScatterRender
     lastScissor = null;
   };
 
-  return { prepare, render, dispose };
+  return { prepare, setCellUniforms, render, dispose };
 }
 

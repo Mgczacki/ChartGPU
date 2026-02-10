@@ -50,6 +50,8 @@ type BarHitTestLayout = Readonly<{
   gap: number;
   /** total cluster width (all bar slots), in xScale range units */
   clusterWidth: number;
+  /** max bars at any category; when 1, all bars use slot 0 for full width */
+  effectiveClusterCount: number;
   /** maps global series index -> cluster slot index */
   clusterIndexByGlobalSeriesIndex: ReadonlyMap<number, number>;
 }>;
@@ -88,6 +90,7 @@ const computeBarHitTestLayout = (
     barWidth: barWidthRange,
     gap,
     clusterWidth,
+    effectiveClusterCount: layout.effectiveClusterCount,
     clusterIndexByGlobalSeriesIndex,
   };
 };
@@ -156,6 +159,7 @@ export function findPointsAtX(
   const maxDxSq = maxDx * maxDx;
 
   const xTarget = xScale.invert(xValue);
+  console.log('[DEBUG facet] findPointsAtX:', { xValue, xTarget });
   if (!Number.isFinite(xTarget)) return [];
 
   const matches: PointsAtXMatch[] = [];
@@ -179,8 +183,10 @@ export function findPointsAtX(
     if (seriesConfig.type === 'bar' && barLayout) {
       const clusterIndex = barLayout.clusterIndexByGlobalSeriesIndex.get(s);
       if (clusterIndex !== undefined) {
-        const { barWidth, gap, clusterWidth } = barLayout;
-        const offsetLeftFromCategoryCenter = -clusterWidth / 2 + clusterIndex * (barWidth + gap);
+        const { barWidth, gap, clusterWidth, effectiveClusterCount } = barLayout;
+        const effectiveClusterIndex =
+          effectiveClusterCount <= 1 ? 0 : Math.min(clusterIndex, effectiveClusterCount - 1);
+        const offsetLeftFromCategoryCenter = -clusterWidth / 2 + effectiveClusterIndex * (barWidth + gap);
 
         const hitTol =
           tolerance === undefined || !Number.isFinite(tolerance) ? 0 : Math.max(0, tolerance);

@@ -134,6 +134,14 @@ const generateAxisVertices = (
   const domainMin = domain.min;
   const domainMax = domain.max;
 
+  // For category axis, place ticks at indices 0, 1, ..., N-1 so they align with bars and labels.
+  const isCategory = axisConfig.type === 'category';
+  const tickValueAt = (i: number): number => {
+    if (isCategory) return i;
+    const t = tickCount === 1 ? 0.5 : i / (tickCount - 1);
+    return domainMin + t * (domainMax - domainMin);
+  };
+
   // Line-list segments:
   // - 1 baseline segment
   // - tickCount tick segments
@@ -154,8 +162,7 @@ const generateAxisVertices = (
     const y1 = y0 - tickDeltaClipY;
 
     for (let i = 0; i < tickCount; i++) {
-      const t = tickCount === 1 ? 0.5 : i / (tickCount - 1);
-      const v = domainMin + t * (domainMax - domainMin);
+      const v = tickValueAt(i);
       const x = scale.scale(v);
 
       vertices[idx++] = x;
@@ -175,8 +182,7 @@ const generateAxisVertices = (
     const x1 = x0 - tickDeltaClipX;
 
     for (let i = 0; i < tickCount; i++) {
-      const t = tickCount === 1 ? 0.5 : i / (tickCount - 1);
-      const v = domainMin + t * (domainMax - domainMin);
+      const v = tickValueAt(i);
       const y = scale.scale(v);
 
       vertices[idx++] = x0;

@@ -3,13 +3,17 @@ import type {
   ResolvedBarSeriesConfig,
   ResolvedCandlestickSeriesConfig,
   ResolvedChartGPUOptions,
+  ResolvedHistogramSeriesConfig,
   ResolvedPieSeriesConfig,
+  ResolvedScatterSeriesConfig,
 } from '../config/OptionResolver';
 import type {
   AnimationConfig,
   AnnotationConfig,
   DataPoint,
   DataPointTuple,
+  FacetConfig,
+  HeatmapDataPoint,
   OHLCDataPoint,
   OHLCDataPointTuple,
   PieCenter,
@@ -27,6 +31,7 @@ import { createAreaRenderer } from '../renderers/createAreaRenderer';
 import { createLineRenderer } from '../renderers/createLineRenderer';
 import { createBarRenderer } from '../renderers/createBarRenderer';
 import { createScatterRenderer } from '../renderers/createScatterRenderer';
+import { createHeatmapRenderer, getHeatmapColormapCssStops } from '../renderers/createHeatmapRenderer';
 import { createScatterDensityRenderer } from '../renderers/createScatterDensityRenderer';
 import { createPieRenderer } from '../renderers/createPieRenderer';
 import { createCandlestickRenderer } from '../renderers/createCandlestickRenderer';
@@ -50,12 +55,15 @@ import { computeCandlestickBodyWidthRange, findCandlestick } from '../interactio
 import { findPieSlice } from '../interaction/findPieSlice';
 import { createLinearScale } from '../utils/scales';
 import type { LinearScale } from '../utils/scales';
+import { computeHistogramBins } from '../utils/histogramBins';
 import { parseCssColorToGPUColor, parseCssColorToRgba01 } from '../utils/colors';
 import { createTextOverlay } from '../components/createTextOverlay';
 import type { TextOverlay, TextOverlayAnchor } from '../components/createTextOverlay';
 import { getAxisTitleFontSize, styleAxisLabelSpan } from '../utils/axisLabelStyling';
 import { createLegend } from '../components/createLegend';
 import type { Legend } from '../components/createLegend';
+import { createHeatmapColorScaleBar } from '../components/createHeatmapColorScaleBar';
+import type { HeatmapColorScaleBar } from '../components/createHeatmapColorScaleBar';
 import { createTooltip } from '../components/createTooltip';
 import type { Tooltip } from '../components/createTooltip';
 import type { TooltipParams } from '../config/types';
@@ -206,6 +214,15 @@ const DEFAULT_TARGET_FORMAT: GPUTextureFormat = 'bgra8unorm';
 const DEFAULT_TICK_COUNT: number = 5;
 const DEFAULT_TICK_LENGTH_CSS_PX: number = 6;
 const LABEL_PADDING_CSS_PX = 4;
+
+/** CSS pixels reserved for legend when position is 'left' or 'right'. */
+const LEGEND_RESERVE_SIDE_CSS_PX = 110;
+/** CSS pixels reserved for legend when position is 'top' or 'bottom'. */
+const LEGEND_RESERVE_TOP_BOTTOM_CSS_PX = 45;
+/** Fraction of y range added above yMax when domain is auto (so the top value is not flush with the plot edge). */
+const Y_DOMAIN_TOP_PADDING_RATIO = 0.05;
+/** Extra top margin when a heatmap series is present, to make room for the color scale bar above the plot. */
+const HEATMAP_COLOR_SCALE_BAR_RESERVE_CSS_PX = 40;
 const DEFAULT_CROSSHAIR_LINE_WIDTH_CSS_PX = 1;
 const DEFAULT_HIGHLIGHT_SIZE_CSS_PX = 4;
 
@@ -239,6 +256,141 @@ const isTupleDataPoint = (p: DataPoint): p is DataPointTuple => Array.isArray(p)
 const getPointXY = (p: DataPoint): { readonly x: number; readonly y: number } => {
   if (isTupleDataPoint(p)) return { x: p[0], y: p[1] };
   return { x: p.x, y: p.y };
+};
+
+/** Returns facet value for a point when it's an object with the given key; otherwise undefined. */
+const getPointFacetValue = (p: DataPoint, column: string): string | number | undefined => {
+  if (isTupleDataPoint(p)) return undefined;
+  const v = (p as Record<string, unknown>)[column];
+  if (v === null || v === undefined) return undefined;
+  return typeof v === 'string' || typeof v === 'number' ? v : String(v);
+};
+
+/** Compare two facet values consistently (string vs number) so filtering matches layout order. */
+const facetValueEquals = (a: string | number | undefined, b: string | number | undefined): boolean => {
+  if (a === undefined || b === undefined) return a === b;
+  return String(a) === String(b);
+};
+
+/** Whether this series type supports faceting (cartesian with per-point data). */
+const seriesSupportsFacet = (type: string): boolean =>
+  type === 'line' || type === 'area' || type === 'bar' || type === 'scatter' || type === 'histogram';
+
+/** Collect unique facet values in order of first appearance from facetable series. Uses rawData when present so facet properties are preserved. */
+const getUniqueFacetValues = (
+  series: ReadonlyArray<ResolvedChartGPUOptions['series'][number]>,
+  column: string
+): (string | number)[] => {
+  const seen = new Set<string>();
+  const order: (string | number)[] = [];
+  for (let s = 0; s < series.length; s++) {
+    const ser = series[s];
+    if (!ser || !seriesSupportsFacet(ser.type)) continue;
+    const data: ReadonlyArray<DataPoint> =
+      ser.type === 'histogram'
+        ? ((ser as ResolvedHistogramSeriesConfig).rawDataPoints ?? [])
+        : ((ser as { rawData?: ReadonlyArray<DataPoint> }).rawData ?? (ser.data as ReadonlyArray<DataPoint>));
+    for (let i = 0; i < data.length; i++) {
+      const v = getPointFacetValue(data[i] as DataPoint, column);
+      if (v === undefined) continue;
+      const key = String(v);
+      if (!seen.has(key)) {
+        seen.add(key);
+        order.push(v);
+      }
+    }
+  }
+  return order;
+};
+
+/** Facet layout: unique values and grid dimensions. */
+type FacetLayout = Readonly<{
+  uniqueFx: (string | number)[];
+  uniqueFy: (string | number)[];
+  nRows: number;
+  nCols: number;
+}>;
+
+const computeFacetLayout = (
+  options: ResolvedChartGPUOptions,
+  series: ReadonlyArray<ResolvedChartGPUOptions['series'][number]>
+): FacetLayout | null => {
+  const facet = options.facet;
+  if (!facet?.fx && !facet?.fy) return null;
+  const hasFx = Boolean(facet.fx?.trim());
+  const hasFy = Boolean(facet.fy?.trim());
+  if (!hasFx && !hasFy) return null;
+  const uniqueFx = hasFx ? getUniqueFacetValues(series, facet.fx!) : [];
+  const uniqueFy = hasFy ? getUniqueFacetValues(series, facet.fy!) : [];
+  const nCols = hasFx ? Math.max(1, uniqueFx.length) : 1;
+  const nRows = hasFy ? Math.max(1, uniqueFy.length) : 1;
+  if (nCols === 0 || nRows === 0) return null;
+  return { uniqueFx, uniqueFy, nRows, nCols };
+};
+
+const FACET_CELL_GAP_CSS_PX = 8;
+
+/** Compute grid area for one facet cell (sub-rect of the canvas). Margins define space around the whole grid. */
+const computeCellGridArea = (
+  row: number,
+  col: number,
+  nRows: number,
+  nCols: number,
+  canvasWidth: number,
+  canvasHeight: number,
+  devicePixelRatio: number,
+  marginLeft: number,
+  marginRight: number,
+  marginTop: number,
+  marginBottom: number,
+  gapCssPx: number = FACET_CELL_GAP_CSS_PX
+): GridArea => {
+  const totalW = canvasWidth / devicePixelRatio;
+  const totalH = canvasHeight / devicePixelRatio;
+  const gapX = gapCssPx;
+  const gapY = gapCssPx;
+  const cellW = (totalW - marginLeft - marginRight - (nCols - 1) * gapX) / nCols;
+  const cellH = (totalH - marginTop - marginBottom - (nRows - 1) * gapY) / nRows;
+  const leftEdge = marginLeft + col * (cellW + gapX);
+  const topEdge = marginTop + row * (cellH + gapY);
+  return {
+    left: leftEdge,
+    right: totalW - leftEdge - cellW,
+    top: topEdge,
+    bottom: totalH - topEdge - cellH,
+    canvasWidth,
+    canvasHeight,
+    devicePixelRatio,
+  };
+};
+
+/** Filter series data to points that belong to the given facet cell. Returns array of same length as series; facetable series get filtered data, others get empty data. */
+const filterSeriesForFacetCell = (
+  series: ReadonlyArray<ResolvedChartGPUOptions['series'][number]>,
+  row: number,
+  col: number,
+  facet: FacetConfig,
+  uniqueFx: (string | number)[],
+  uniqueFy: (string | number)[]
+): ResolvedChartGPUOptions['series'] => {
+  const fxVal = facet.fx && uniqueFx.length > 0 ? uniqueFx[col] : undefined;
+  const fyVal = facet.fy && uniqueFy.length > 0 ? uniqueFy[row] : undefined;
+  return series.map((s) => {
+    if (!s || !seriesSupportsFacet(s.type)) {
+      return { ...s, data: [], rawData: [] } as ResolvedChartGPUOptions['series'][number];
+    }
+    const source: ReadonlyArray<DataPoint> =
+      s.type === 'histogram'
+        ? ((s as ResolvedHistogramSeriesConfig).rawDataPoints ?? [])
+        : ((s as { rawData?: ReadonlyArray<DataPoint> }).rawData ?? (s.data as ReadonlyArray<DataPoint>));
+    const filtered = source.filter((p) => {
+      if (isTupleDataPoint(p)) return false;
+      if (fxVal !== undefined && !facetValueEquals(getPointFacetValue(p, facet.fx!), fxVal)) return false;
+      if (fyVal !== undefined && !facetValueEquals(getPointFacetValue(p, facet.fy!), fyVal)) return false;
+      return true;
+    });
+    return { ...s, data: filtered, rawData: filtered } as ResolvedChartGPUOptions['series'][number];
+  });
 };
 
 const computeRawBoundsFromData = (data: ReadonlyArray<DataPoint>): Bounds | null => {
@@ -381,6 +533,23 @@ const computeGlobalBounds = (
       }
     }
 
+    // Histogram series: x from bin edges, y from 0 to max(counts).
+    if (seriesConfig.type === 'histogram') {
+      const { binEdges, counts } = seriesConfig;
+      if (binEdges.length >= 2 && counts.length >= 1) {
+        const xLo = binEdges[0]!;
+        const xHi = binEdges[binEdges.length - 1]!;
+        const yHi = Math.max(...counts, 0);
+        if (Number.isFinite(xLo) && Number.isFinite(xHi)) {
+          if (xLo < xMin) xMin = xLo;
+          if (xHi > xMax) xMax = xHi;
+        }
+        if (0 < yMin) yMin = 0;
+        if (Number.isFinite(yHi) && yHi > yMax) yMax = yHi;
+      }
+      continue;
+    }
+
     // Candlestick series: bounds should be precomputed in OptionResolver from timestamp/low/high.
     // If we reach here, `rawBounds` was undefined; fall back to a raw OHLC scan so axes don't break.
     if (seriesConfig.type === 'candlestick') {
@@ -418,7 +587,8 @@ const computeGlobalBounds = (
       continue;
     }
 
-    const data = seriesConfig.data;
+    // Use rawData when available to include all data points (important for facets)
+    const data = (seriesConfig.rawData ?? seriesConfig.data) as ReadonlyArray<DataPoint>;
     for (let i = 0; i < data.length; i++) {
       const { x, y } = getPointXY(data[i]);
       if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
@@ -497,10 +667,49 @@ const computeGridArea = (gpuContext: GPUContextLike, options: ResolvedChartGPUOp
 
   // Validate and sanitize grid margins (CSS pixels)
   // Grid margins come from resolved options and should be finite, but guard against edge cases
-  const left = Number.isFinite(options.grid.left) ? options.grid.left : 0;
-  const right = Number.isFinite(options.grid.right) ? options.grid.right : 0;
-  const top = Number.isFinite(options.grid.top) ? options.grid.top : 0;
-  const bottom = Number.isFinite(options.grid.bottom) ? options.grid.bottom : 0;
+  let left = Number.isFinite(options.grid.left) ? options.grid.left : 0;
+  let right = Number.isFinite(options.grid.right) ? options.grid.right : 0;
+  let top = Number.isFinite(options.grid.top) ? options.grid.top : 0;
+  let bottom = Number.isFinite(options.grid.bottom) ? options.grid.bottom : 0;
+
+  // Reserve margin for legend only when at least one series is shown in the legend
+  const hasLegendItems = options.series.some((s) => s.showInLegend !== false);
+  if (hasLegendItems) {
+    const legendPosition = options.legend?.position ?? 'right';
+    switch (legendPosition) {
+      case 'left':
+        left += LEGEND_RESERVE_SIDE_CSS_PX;
+        break;
+      case 'right':
+        right += LEGEND_RESERVE_SIDE_CSS_PX;
+        break;
+      case 'top':
+        top += LEGEND_RESERVE_TOP_BOTTOM_CSS_PX;
+        break;
+      case 'bottom':
+        bottom += LEGEND_RESERVE_TOP_BOTTOM_CSS_PX;
+        break;
+    }
+  }
+
+  // Auto-adjust bottom margin for rotated x-axis labels
+  const xTickRotation = options.xAxis.tickLabelRotation ?? 0;
+  if (xTickRotation !== 0 && options.xAxis.type === 'category' && options.xAxis.data) {
+    const maxLabelLength = options.xAxis.data.reduce((max, label) => Math.max(max, String(label).length), 0);
+    const fontSize = options.theme.fontSize;
+    // Approximate character width (monospace assumption: ~0.6 * fontSize)
+    const approxLabelWidth = maxLabelLength * fontSize * 0.6;
+    const rotationRad = Math.abs(xTickRotation) * (Math.PI / 180);
+    // Height contribution from rotated label: width * sin(angle)
+    const rotatedHeight = approxLabelWidth * Math.sin(rotationRad);
+    // Add tick length, padding, and rotated label height
+    const tickLength = options.xAxis.tickLength ?? DEFAULT_TICK_LENGTH_CSS_PX;
+    const requiredBottom = tickLength + LABEL_PADDING_CSS_PX + rotatedHeight + fontSize * 0.5;
+    // Use the larger of user-provided bottom or calculated bottom
+    bottom = Math.max(bottom, requiredBottom);
+  }
+
+  // Margins for facet labels are not auto-increased here so that the caller's grid.right / grid.top are respected (e.g. small FY_RIGHT_MARGIN in ExpertAIPlot).
 
   // Ensure margins are non-negative (negative margins could cause rendering issues)
   const sanitizedLeft = Math.max(0, left);
@@ -1034,6 +1243,11 @@ const generateLinearTicks = (domainMin: number, domainMax: number, tickCount: nu
   return ticks;
 };
 
+const resolveTickCount = (axisSplitNumber: number | undefined, fallback: number): number => {
+  if (axisSplitNumber == null || !Number.isFinite(axisSplitNumber)) return fallback;
+  return Math.max(1, Math.min(20, Math.floor(axisSplitNumber)));
+};
+
 const computeAdaptiveTimeXAxisTicks = (params: {
   readonly axisMin: number | null;
   readonly axisMax: number | null;
@@ -1126,8 +1340,26 @@ const computeBaseXDomain = (
   runtimeRawBoundsByIndex?: ReadonlyArray<Bounds | null> | null
 ): { readonly min: number; readonly max: number } => {
   const bounds = computeGlobalBounds(options.series, runtimeRawBoundsByIndex);
-  const baseMin = finiteOrUndefined(options.xAxis.min) ?? bounds.xMin;
-  const baseMax = finiteOrUndefined(options.xAxis.max) ?? bounds.xMax;
+  const explicitMin = finiteOrUndefined(options.xAxis.min);
+  const explicitMax = finiteOrUndefined(options.xAxis.max);
+
+  let baseMin = explicitMin ?? bounds.xMin;
+  let baseMax = explicitMax ?? bounds.xMax;
+
+  // For category axes with no explicit min/max, extend domain by 0.5 on each side
+  // so the first and last bars are not clipped (bar centers at 0, 1, ..., N-1).
+  if (
+    options.xAxis.type === 'category' &&
+    explicitMin === undefined &&
+    explicitMax === undefined
+  ) {
+    const n = options.xAxis.data?.length ?? Math.max(1, Math.floor(baseMax - baseMin + 1));
+    if (Number.isFinite(n) && n >= 1) {
+      baseMin = -0.5;
+      baseMax = n - 1 + 0.5;
+    }
+  }
+
   return normalizeDomain(baseMin, baseMax);
 };
 
@@ -1147,9 +1379,20 @@ const computeVisibleYBounds = (series: ResolvedChartGPUOptions['series']): Bound
     // Pie series are non-cartesian; they don't participate in y bounds.
     if (seriesConfig.type === 'pie') continue;
 
+    // Histogram series: y from 0 to max(counts)
+    if (seriesConfig.type === 'histogram') {
+      const { counts } = seriesConfig;
+      if (counts.length >= 1) {
+        const yHi = Math.max(...counts, 0);
+        if (0 < yMin) yMin = 0;
+        if (Number.isFinite(yHi) && yHi > yMax) yMax = yHi;
+      }
+      continue;
+    }
+
     // Candlestick series: scan low/high from visible data
     if (seriesConfig.type === 'candlestick') {
-      const visibleOHLC = seriesConfig.data as ReadonlyArray<OHLCDataPoint>;
+      const visibleOHLC = (seriesConfig.rawData ?? seriesConfig.data) as ReadonlyArray<OHLCDataPoint>;
       for (let i = 0; i < visibleOHLC.length; i++) {
         const p = visibleOHLC[i]!;
         const low = isTupleOHLCDataPoint(p) ? p[3] : p.low;
@@ -1167,7 +1410,8 @@ const computeVisibleYBounds = (series: ResolvedChartGPUOptions['series']): Bound
     }
 
     // Cartesian series (line, area, bar, scatter): scan y from visible data
-    const data = seriesConfig.data;
+    // Use rawData when available to include all data points (important for facets)
+    const data = (seriesConfig.rawData ?? seriesConfig.data) as ReadonlyArray<DataPoint>;
     for (let i = 0; i < data.length; i++) {
       const { y } = getPointXY(data[i]);
       if (!Number.isFinite(y)) continue;
@@ -1205,7 +1449,14 @@ const computeBaseYDomain = (
   const autoBoundsMode = options.yAxis.autoBounds ?? 'visible';
   let bounds: Bounds;
 
-  if (autoBoundsMode === 'visible' && visibleBoundsOverride) {
+  // When there are horizontal facets (fx), always use global bounds to include all facet data
+  // This ensures the shared Y domain includes values from all facets
+  const hasHorizontalFacets = Boolean(options.facet?.fx?.trim());
+  
+  if (hasHorizontalFacets) {
+    // Always use global bounds for facets to include all data from all facet cells
+    bounds = computeGlobalBounds(options.series, runtimeRawBoundsByIndex);
+  } else if (autoBoundsMode === 'visible' && visibleBoundsOverride) {
     // Use visible bounds from renderSeries (zoom-aware, computed from visible data only)
     bounds = visibleBoundsOverride;
   } else {
@@ -1213,9 +1464,30 @@ const computeBaseYDomain = (
     bounds = computeGlobalBounds(options.series, runtimeRawBoundsByIndex);
   }
 
+  // For category y-axis (e.g. heatmap), extend domain by 0.5 on each side so cells are centered.
+  if (
+    options.yAxis.type === 'category' &&
+    explicitMin === undefined &&
+    explicitMax === undefined &&
+    options.yAxis.data?.length != null &&
+    options.yAxis.data.length >= 1
+  ) {
+    const n = options.yAxis.data.length;
+    return normalizeDomain(-0.5, n - 1 + 0.5);
+  }
+
   // Merge explicit bounds with computed bounds (partial override support)
   const yMin = explicitMin ?? bounds.yMin;
-  const yMax = explicitMax ?? bounds.yMax;
+  let yMax = explicitMax ?? bounds.yMax;
+
+  // When max is auto, add a little headroom above the top value so it does not sit on the plot edge
+  if (explicitMax === undefined) {
+    const span = yMax - yMin;
+    if (Number.isFinite(span) && span > 0) {
+      yMax = yMax + span * Y_DOMAIN_TOP_PADDING_RATIO;
+    }
+  }
+
   return normalizeDomain(yMin, yMax);
 };
 
@@ -1437,7 +1709,11 @@ export function createRenderCoordinator(
   const axisLabelOverlay: TextOverlay | null = overlayContainer ? createTextOverlay(overlayContainer) : null;
   // Dedicated overlay for annotations (do not reuse axis label overlay).
   const annotationOverlay: TextOverlay | null = overlayContainer ? createTextOverlay(overlayContainer) : null;
-  const legend: Legend | null = overlayContainer ? createLegend(overlayContainer, 'right') : null;
+  const facetLabelOverlay: TextOverlay | null = overlayContainer ? createTextOverlay(overlayContainer) : null;
+  const legend: Legend | null = overlayContainer
+    ? createLegend(overlayContainer, options.legend.position)
+    : null;
+  const heatmapColorScaleBar: HeatmapColorScaleBar | null = overlayContainer ? createHeatmapColorScaleBar(overlayContainer) : null;
   // Text measurement for axis labels. Only available in DOM contexts (not worker threads).
   const tickMeasureCtx: CanvasRenderingContext2D | null = (() => {
     if (typeof document === 'undefined') {
@@ -1752,12 +2028,185 @@ export function createRenderCoordinator(
   };
 
   const updateLegend = (series: ResolvedChartGPUOptions['series'], theme: ResolvedChartGPUOptions['theme']) => {
-    legend?.update(series, theme);
+    legend?.update(series, theme, currentOptions.legend.position);
   };
 
   updateLegend(currentOptions.series, currentOptions.theme);
 
   let dataStore = createDataStore(device);
+
+  // Per-cell scatter instance buffers for facets (one buffer per facetSeriesIndex so each cell draws its own data).
+  const SCATTER_INSTANCE_STRIDE_BYTES = 16;
+  const scatterInstanceStore: {
+    ensureCapacity(index: number, minBytes: number): void;
+    getBuffer(index: number): GPUBuffer;
+    setInstanceCount(index: number, count: number): void;
+    getInstanceCount(index: number): number;
+    dispose(): void;
+  } = (() => {
+    const entries = new Map<number, { buffer: GPUBuffer; count: number }>();
+    const nextPow2 = (v: number) => (v <= 0 ? 4 : 2 ** Math.ceil(Math.log2(Math.max(4, v))));
+    return {
+      ensureCapacity(index: number, minBytes: number): void {
+        let e = entries.get(index);
+        const size = nextPow2(minBytes);
+        if (!e) {
+          e = {
+            buffer: device.createBuffer({
+              label: 'scatterInstanceStore/buffer',
+              size,
+              usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+            }),
+            count: 0,
+          };
+          entries.set(index, e);
+        } else if (e.buffer.size < minBytes) {
+          try {
+            e.buffer.destroy();
+          } catch {
+            /* best-effort */
+          }
+          e.buffer = device.createBuffer({
+            label: 'scatterInstanceStore/buffer',
+            size,
+            usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+          });
+        }
+      },
+      getBuffer(index: number): GPUBuffer {
+        this.ensureCapacity(index, SCATTER_INSTANCE_STRIDE_BYTES);
+        return entries.get(index)!.buffer;
+      },
+      setInstanceCount(index: number, count: number): void {
+        let e = entries.get(index);
+        if (!e) {
+          this.ensureCapacity(index, SCATTER_INSTANCE_STRIDE_BYTES);
+          e = entries.get(index)!;
+        }
+        e.count = count;
+      },
+      getInstanceCount(index: number): number {
+        return entries.get(index)?.count ?? 0;
+      },
+      dispose(): void {
+        for (const e of entries.values()) {
+          try {
+            e.buffer.destroy();
+          } catch {
+            /* best-effort */
+          }
+        }
+        entries.clear();
+      },
+    };
+  })();
+
+  // Per-cell area vertex buffers for facets (one buffer per facetSeriesIndex).
+  const AREA_VERTEX_STRIDE_BYTES = 16; // 2 vertices * vec2<f32> per point => 4 floats per point => 16 bytes per point
+  const areaVertexStore: {
+    ensureCapacity(index: number, minBytes: number): void;
+    getBuffer(index: number): GPUBuffer;
+    setVertexCount(index: number, count: number): void;
+    getVertexCount(index: number): number;
+    dispose(): void;
+  } = (() => {
+    const entries = new Map<number, { buffer: GPUBuffer; count: number }>();
+    const nextPow2Area = (v: number) => (v <= 0 ? 4 : 2 ** Math.ceil(Math.log2(Math.max(4, v))));
+    return {
+      ensureCapacity(index: number, minBytes: number): void {
+        let e = entries.get(index);
+        const size = nextPow2Area(minBytes);
+        if (!e) {
+          e = {
+            buffer: device.createBuffer({
+              label: 'areaVertexStore/buffer',
+              size,
+              usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+            }),
+            count: 0,
+          };
+          entries.set(index, e);
+        } else if (e.buffer.size < minBytes) {
+          try {
+            e.buffer.destroy();
+          } catch {
+            /* best-effort */
+          }
+          e.buffer = device.createBuffer({
+            label: 'areaVertexStore/buffer',
+            size,
+            usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+          });
+        }
+      },
+      getBuffer(index: number): GPUBuffer {
+        this.ensureCapacity(index, AREA_VERTEX_STRIDE_BYTES);
+        return entries.get(index)!.buffer;
+      },
+      setVertexCount(index: number, count: number): void {
+        let e = entries.get(index);
+        if (!e) {
+          this.ensureCapacity(index, AREA_VERTEX_STRIDE_BYTES);
+          e = entries.get(index)!;
+        }
+        e.count = count;
+      },
+      getVertexCount(index: number): number {
+        return entries.get(index)?.count ?? 0;
+      },
+      dispose(): void {
+        for (const e of entries.values()) {
+          try {
+            e.buffer.destroy();
+          } catch {
+            /* best-effort */
+          }
+        }
+        entries.clear();
+      },
+    };
+  })();
+
+  const BAR_INSTANCE_STRIDE_BYTES = 32;
+  const barInstanceStore: {
+    ensureCapacity(index: number, minBytes: number): void;
+    getBuffer(index: number): GPUBuffer;
+    setInstanceCount(index: number, count: number): void;
+    getInstanceCount(index: number): number;
+    dispose(): void;
+  } = (() => {
+    const entries = new Map<number, { buffer: GPUBuffer; count: number }>();
+    const nextPow2Bar = (v: number) => (v <= 0 ? 4 : 2 ** Math.ceil(Math.log2(Math.max(4, v))));
+    return {
+      ensureCapacity(index: number, minBytes: number): void {
+        let e = entries.get(index);
+        const size = nextPow2Bar(minBytes);
+        if (!e) {
+          e = { buffer: device.createBuffer({ label: 'barInstanceStore/buffer', size, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST }), count: 0 };
+          entries.set(index, e);
+        } else if (e.buffer.size < minBytes) {
+          try { e.buffer.destroy(); } catch { /* best-effort */ }
+          e.buffer = device.createBuffer({ label: 'barInstanceStore/buffer', size, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+        }
+      },
+      getBuffer(index: number): GPUBuffer {
+        this.ensureCapacity(index, BAR_INSTANCE_STRIDE_BYTES);
+        return entries.get(index)!.buffer;
+      },
+      setInstanceCount(index: number, count: number): void {
+        let e = entries.get(index);
+        if (!e) { this.ensureCapacity(index, BAR_INSTANCE_STRIDE_BYTES); e = entries.get(index)!; }
+        e.count = count;
+      },
+      getInstanceCount(index: number): number {
+        return entries.get(index)?.count ?? 0;
+      },
+      dispose(): void {
+        for (const e of entries.values()) { try { e.buffer.destroy(); } catch { /* best-effort */ } }
+        entries.clear();
+      },
+    };
+  })();
 
   const gridRenderer = createGridRenderer(device, { targetFormat });
   const xAxisRenderer = createAxisRenderer(device, { targetFormat });
@@ -1882,8 +2331,21 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
     overlayTargetsFormat = targetFormat;
   };
 
-  const initialGridArea = computeGridArea(gpuContext, currentOptions);
-  
+  const initialHasHeatmap = currentOptions.series.some((s) => s.type === 'heatmap');
+  const initialOptionsForGrid =
+    initialHasHeatmap && currentOptions.grid
+      ? {
+          ...currentOptions,
+          grid: {
+            ...currentOptions.grid,
+            top:
+              (Number.isFinite(currentOptions.grid.top) ? currentOptions.grid.top : 0) +
+              HEATMAP_COLOR_SCALE_BAR_RESERVE_CSS_PX,
+          },
+        }
+      : currentOptions;
+  const initialGridArea = computeGridArea(gpuContext, initialOptionsForGrid);
+
   // Event manager requires HTMLCanvasElement (DOM events).
   // OffscreenCanvas is not supported for chart creation.
   const eventManager = isHTMLCanvasElement(gpuContext.canvas) 
@@ -1900,6 +2362,8 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
     gridY: number;
     isInGrid: boolean;
     hasPointer: boolean;
+    /** When using facets, index of the cell under the pointer (undefined if none). */
+    facetCellIndex?: number;
   }>;
 
   let pointerState: PointerState = {
@@ -2214,12 +2678,19 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
 
   const getPlotSizeCssPx = (
     canvas: SupportedCanvas,
-    gridArea: GridArea
+    gridArea: GridArea,
+    options?: { useLogicalSize?: boolean }
   ): { readonly plotWidthCss: number; readonly plotHeightCss: number } | null => {
     let canvasWidthCss: number;
     let canvasHeightCss: number;
 
-    if (isHTMLCanvasElement(canvas)) {
+    if (options?.useLogicalSize) {
+      // Use logical size (canvas logical pixels) so interaction scales match event payload gridX/gridY for facet cells
+      const dpr = gridArea.devicePixelRatio > 0 ? gridArea.devicePixelRatio : 1;
+      canvasWidthCss = gridArea.canvasWidth / dpr;
+      canvasHeightCss = gridArea.canvasHeight / dpr;
+      if (!(canvasWidthCss > 0) || !(canvasHeightCss > 0)) return null;
+    } else if (isHTMLCanvasElement(canvas)) {
       // HTMLCanvasElement: use getBoundingClientRect() for actual CSS dimensions
       const rect = canvas.getBoundingClientRect();
       if (!(rect.width > 0) || !(rect.height > 0)) return null;
@@ -2237,12 +2708,24 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
     const plotHeightCss = canvasHeightCss - gridArea.top - gridArea.bottom;
     if (!(plotWidthCss > 0) || !(plotHeightCss > 0)) return null;
 
+    if (options?.useLogicalSize) {
+      console.log('[DEBUG facet] useLogicalSize:', {
+        canvasWidthCss,
+        canvasHeightCss,
+        gridAreaLeft: gridArea.left,
+        gridAreaRight: gridArea.right,
+        plotWidthCss,
+        plotHeightCss,
+      });
+    }
+
     return { plotWidthCss, plotHeightCss };
   };
 
   const computeInteractionScalesGridCssPx = (
     gridArea: GridArea,
-    domains: { readonly xDomain: { readonly min: number; readonly max: number }; readonly yDomain: { readonly min: number; readonly max: number } }
+    domains: { readonly xDomain: { readonly min: number; readonly max: number }; readonly yDomain: { readonly min: number; readonly max: number } },
+    useLogicalSize?: boolean
   ):
     | {
         readonly xScale: LinearScale;
@@ -2255,7 +2738,7 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
     // Support both HTMLCanvasElement and OffscreenCanvas
     if (!canvas) return null;
 
-    const plotSize = getPlotSizeCssPx(canvas, gridArea);
+    const plotSize = getPlotSizeCssPx(canvas, gridArea, { useLogicalSize });
     if (!plotSize) return null;
 
     // IMPORTANT: grid-local CSS px ranges (0..plotWidth/Height), for interaction hit-testing.
@@ -2302,6 +2785,21 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         color: s?.color ?? '#888',
       };
     }
+  };
+
+  const buildHeatmapTooltipParams = (
+    seriesIndex: number,
+    dataIndex: number,
+    point: HeatmapDataPoint
+  ): TooltipParams => {
+    const s = currentOptions.series[seriesIndex];
+    return {
+      seriesName: s?.name ?? '',
+      seriesIndex,
+      dataIndex,
+      value: [point.x, point.y, point.value] as const,
+      color: s?.color ?? '#888',
+    };
   };
 
   // Helper: Find pie slice at pointer position (extracted to avoid duplication)
@@ -2371,6 +2869,7 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
       gridY: payload.gridY,
       isInGrid: payload.isInGrid,
       hasPointer: true,
+      facetCellIndex: payload.facetCellIndex,
     };
 
     // If we're over the plot and we have recent interaction scales, update interaction-x in domain units.
@@ -2591,7 +3090,7 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
     const next: ResolvedChartGPUOptions['series'][number][] = new Array(currentOptions.series.length);
     for (let i = 0; i < currentOptions.series.length; i++) {
       const s = currentOptions.series[i]!;
-      if (s.type === 'pie') {
+      if (s.type === 'pie' || s.type === 'heatmap' || s.type === 'histogram') {
         next[i] = s;
         continue;
       }
@@ -2642,8 +3141,8 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
     for (let i = 0; i < runtimeBaseSeries.length; i++) {
       const baseline = runtimeBaseSeries[i]!;
       
-      // Pie charts don't need slicing
-      if (baseline.type === 'pie') {
+      // Pie, heatmap, and histogram don't need x-range slicing.
+      if (baseline.type === 'pie' || baseline.type === 'heatmap' || baseline.type === 'histogram') {
         next[i] = baseline;
         continue;
       }
@@ -2714,7 +3213,7 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
     for (let i = 0; i < runtimeBaseSeries.length; i++) {
       const s = runtimeBaseSeries[i]!;
 
-      if (s.type === 'pie') {
+      if (s.type === 'pie' || s.type === 'heatmap' || s.type === 'histogram') {
         next[i] = s;
         continue;
       }
@@ -2805,6 +3304,7 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
   const lineRenderers: Array<ReturnType<typeof createLineRenderer>> = [];
   const scatterRenderers: Array<ReturnType<typeof createScatterRenderer>> = [];
   const scatterDensityRenderers: Array<ReturnType<typeof createScatterDensityRenderer>> = [];
+  const heatmapRenderers: Array<ReturnType<typeof createHeatmapRenderer>> = [];
   const pieRenderers: Array<ReturnType<typeof createPieRenderer>> = [];
   const candlestickRenderers: Array<ReturnType<typeof createCandlestickRenderer>> = [];
   const barRenderer = createBarRenderer(device, { targetFormat });
@@ -2849,6 +3349,16 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
     }
   };
 
+  const ensureHeatmapRendererCount = (count: number): void => {
+    while (heatmapRenderers.length > count) {
+      const r = heatmapRenderers.pop();
+      r?.dispose();
+    }
+    while (heatmapRenderers.length < count) {
+      heatmapRenderers.push(createHeatmapRenderer(device, { targetFormat }));
+    }
+  };
+
   const ensurePieRendererCount = (count: number): void => {
     while (pieRenderers.length > count) {
       const r = pieRenderers.pop();
@@ -2873,6 +3383,7 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
   ensureLineRendererCount(currentOptions.series.length);
   ensureScatterRendererCount(currentOptions.series.length);
   ensureScatterDensityRendererCount(currentOptions.series.length);
+  ensureHeatmapRendererCount(currentOptions.series.length);
   ensurePieRendererCount(currentOptions.series.length);
   ensureCandlestickRendererCount(currentOptions.series.length);
 
@@ -2963,7 +3474,7 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
     cachedVisibleYBounds = null;
     gpuSeriesKindByIndex = new Array(resolvedOptions.series.length).fill('unknown');
     lastSampledData = new Array(resolvedOptions.series.length).fill(null);
-    legend?.update(resolvedOptions.series, resolvedOptions.theme);
+    legend?.update(resolvedOptions.series, resolvedOptions.theme, resolvedOptions.legend.position);
     cancelZoomResampleDebounce();
     zoomResampleDue = false;
     cancelScheduledFlush();
@@ -2993,6 +3504,7 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
     ensureLineRendererCount(nextCount);
     ensureScatterRendererCount(nextCount);
     ensureScatterDensityRendererCount(nextCount);
+    ensureHeatmapRendererCount(nextCount);
     ensurePieRendererCount(nextCount);
     ensureCandlestickRendererCount(nextCount);
 
@@ -3136,6 +3648,10 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         return false;
       case 'candlestick':
         return false;
+      case 'heatmap':
+        return false;
+      case 'histogram':
+        return false;
       default:
         return assertUnreachable(series);
     }
@@ -3171,7 +3687,7 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
           switch (s.type) {
             case 'pie': {
               // Pie renderer only emits slices with value > 0.
-              if (s.data.some((it) => typeof it?.value === 'number' && Number.isFinite(it.value) && it.value > 0)) {
+              if (s.data.some((it: { value?: unknown }) => typeof it?.value === 'number' && Number.isFinite(it.value as number) && (it.value as number) > 0)) {
                 return true;
               }
               break;
@@ -3180,7 +3696,9 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
             case 'area':
             case 'bar':
             case 'scatter':
-            case 'candlestick': {
+            case 'candlestick':
+            case 'heatmap':
+            case 'histogram': {
               if (s.data.length > 0) return true;
               break;
             }
@@ -3237,7 +3755,20 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
       updateAnimController.update(performance.now());
     }
 
-    const gridArea = computeGridArea(gpuContext, currentOptions);
+    const hasHeatmapSeries = currentOptions.series.some((s) => s.type === 'heatmap');
+    const optionsForGrid =
+      hasHeatmapSeries && currentOptions.grid
+        ? {
+            ...currentOptions,
+            grid: {
+              ...currentOptions.grid,
+              top:
+                (Number.isFinite(currentOptions.grid.top) ? currentOptions.grid.top : 0) +
+                HEATMAP_COLOR_SCALE_BAR_RESERVE_CSS_PX,
+            },
+          }
+        : currentOptions;
+    const gridArea = computeGridArea(gpuContext, optionsForGrid);
     eventManager?.updateGridArea(gridArea);
     const zoomRange = zoomState?.getRange() ?? null;
 
@@ -3382,7 +3913,8 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
     const canvasCssWidth = gpuContext.canvas ? getCanvasCssWidth(gpuContext.canvas, dpr) : 0;
     const visibleXRangeMs = Math.abs(visibleXDomain.max - visibleXDomain.min);
 
-    let xTickCount = DEFAULT_TICK_COUNT;
+    const xAxisSplitNumber = currentOptions.xAxis.splitNumber;
+    let xTickCount = resolveTickCount(xAxisSplitNumber, DEFAULT_TICK_COUNT);
     let xTickValues: readonly number[] = [];
     let xCategoryLabels: readonly string[] = [];
     if (currentOptions.xAxis.type === 'category') {
@@ -3392,26 +3924,50 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
       xTickCount = categories.length;
       xTickValues = categories.map((_, i) => i);
     } else if (currentOptions.xAxis.type === 'time') {
-      const computed = computeAdaptiveTimeXAxisTicks({
-        axisMin: finiteOrNull(currentOptions.xAxis.min),
-        axisMax: finiteOrNull(currentOptions.xAxis.max),
-        xScale,
-        plotClipLeft: plotClipRect.left,
-        plotClipRight: plotClipRect.right,
-        canvasCssWidth,
-        visibleRangeMs: visibleXRangeMs,
-        measureCtx: tickMeasureCtx,
-        measureCache: tickMeasureCache ?? undefined,
-        fontSize: currentOptions.theme.fontSize,
-        fontFamily: currentOptions.theme.fontFamily || 'sans-serif',
-      });
-      xTickCount = computed.tickCount;
-      xTickValues = computed.tickValues;
+      if (xAxisSplitNumber != null && Number.isFinite(xAxisSplitNumber)) {
+        const domainMin = finiteOrUndefined(currentOptions.xAxis.min) ?? xScale.invert(plotClipRect.left);
+        const domainMax = finiteOrUndefined(currentOptions.xAxis.max) ?? xScale.invert(plotClipRect.right);
+        xTickCount = resolveTickCount(xAxisSplitNumber, DEFAULT_TICK_COUNT);
+        xTickValues = generateLinearTicks(domainMin, domainMax, xTickCount);
+      } else {
+        const computed = computeAdaptiveTimeXAxisTicks({
+          axisMin: finiteOrNull(currentOptions.xAxis.min),
+          axisMax: finiteOrNull(currentOptions.xAxis.max),
+          xScale,
+          plotClipLeft: plotClipRect.left,
+          plotClipRight: plotClipRect.right,
+          canvasCssWidth,
+          visibleRangeMs: visibleXRangeMs,
+          measureCtx: tickMeasureCtx,
+          measureCache: tickMeasureCache ?? undefined,
+          fontSize: currentOptions.theme.fontSize,
+          fontFamily: currentOptions.theme.fontFamily || 'sans-serif',
+        });
+        xTickCount = computed.tickCount;
+        xTickValues = computed.tickValues;
+      }
     } else {
-      // Keep existing behavior for non-time x axes.
+      // Value axis: use splitNumber when provided, else DEFAULT_TICK_COUNT
       const domainMin = finiteOrUndefined(currentOptions.xAxis.min) ?? xScale.invert(plotClipRect.left);
       const domainMax = finiteOrUndefined(currentOptions.xAxis.max) ?? xScale.invert(plotClipRect.right);
+      xTickCount = resolveTickCount(xAxisSplitNumber, DEFAULT_TICK_COUNT);
       xTickValues = generateLinearTicks(domainMin, domainMax, xTickCount);
+    }
+
+    // Y-axis tick count, values, and category labels (for overlay and grid). Mirror x-axis category logic.
+    let yTickCount = resolveTickCount(currentOptions.yAxis.splitNumber, DEFAULT_TICK_COUNT);
+    let yTickValues: readonly number[] = [];
+    let yCategoryLabels: readonly string[] = [];
+    if (currentOptions.yAxis.type === 'category') {
+      const yCategories = currentOptions.yAxis.data ?? [];
+      yCategoryLabels = yCategories;
+      yTickCount = yCategories.length;
+      yTickValues = yCategories.map((_: string, i: number) => i);
+    } else {
+      const yDomainMin = finiteOrUndefined(currentOptions.yAxis.min) ?? yScale.invert(plotClipRect.bottom);
+      const yDomainMax = finiteOrUndefined(currentOptions.yAxis.max) ?? yScale.invert(plotClipRect.top);
+      yTickCount = resolveTickCount(currentOptions.yAxis.splitNumber, DEFAULT_TICK_COUNT);
+      yTickValues = generateLinearTicks(yDomainMin, yDomainMax, yTickCount);
     }
 
     const interactionScales = computeInteractionScalesGridCssPx(gridArea, {
@@ -3468,7 +4024,211 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
       }
     }
 
-    gridRenderer.prepare(gridArea, { color: currentOptions.theme.gridLineColor });
+    // Facet: multiple panels (fx = horizontal / shared y, fy = vertical / shared x)
+    // Use same data source as filtering (currentOptions.series) so facet column order matches filtered data
+    const facetLayout = computeFacetLayout(currentOptions, currentOptions.series);
+    type FacetCellState = {
+      gridArea: GridArea;
+      /** GridArea for bar renderer so NDC -1..1 maps to the cell when viewport is set to the cell. */
+      cellLocalGridArea: GridArea;
+      series: ResolvedChartGPUOptions['series'];
+      xScale: ReturnType<typeof createLinearScale>;
+      yScale: ReturnType<typeof createLinearScale>;
+      yDomain: { min: number; max: number };
+      plotClipRect: { readonly left: number; readonly right: number; readonly top: number; readonly bottom: number };
+      plotScissor: { x: number; y: number; w: number; h: number };
+      gridOptions: { color: string; verticalPositionsClip?: number[]; horizontalPositionsClip?: number[] };
+      drawXAxis: boolean;
+      drawYAxis: boolean;
+      barSeriesConfigs: ResolvedBarSeriesConfig[];
+      visibleXDomain: { min: number; max: number };
+    };
+    const facetCells: FacetCellState[] = [];
+    if (facetLayout) {
+      const facet = currentOptions.facet!;
+      const hasFx = Boolean(facet.fx?.trim());
+      const hasFy = Boolean(facet.fy?.trim());
+      const sharedXDomain = hasFy ? visibleXDomain : null;
+      const sharedYDomain = hasFx ? yBaseDomain : null;
+      for (let row = 0; row < facetLayout.nRows; row++) {
+        for (let col = 0; col < facetLayout.nCols; col++) {
+          // Use original unfiltered data for facets to ensure all data points are available
+          // seriesForRender may be sampled/filtered by zoom, which would lose original data
+          const sourceSeriesForFacets = currentOptions.series;
+          const cellSeries = filterSeriesForFacetCell(sourceSeriesForFacets, row, col, facet, facetLayout.uniqueFx, facetLayout.uniqueFy);
+          const facetGap = currentOptions.facet?.gap ?? FACET_CELL_GAP_CSS_PX;
+          const cellGridArea = computeCellGridArea(row, col, facetLayout.nRows, facetLayout.nCols, gridArea.canvasWidth, gridArea.canvasHeight, gridArea.devicePixelRatio, gridArea.left, gridArea.right, gridArea.top, gridArea.bottom, facetGap);
+          let cellXDomain: { min: number; max: number };
+          if (sharedXDomain) {
+            cellXDomain = { min: sharedXDomain.min, max: sharedXDomain.max };
+          } else {
+            const b = computeGlobalBounds(cellSeries);
+            const explicitMin = finiteOrUndefined(currentOptions.xAxis.min);
+            const explicitMax = finiteOrUndefined(currentOptions.xAxis.max);
+            let baseMin = explicitMin ?? b.xMin;
+            let baseMax = explicitMax ?? b.xMax;
+            if (currentOptions.xAxis.type === 'category' && explicitMin === undefined && explicitMax === undefined) {
+              // When there's no shared X domain (fx-only facets), use actual data range for each cell
+              // Otherwise, use the global xAxis.data length for consistency across facets
+              const n = sharedXDomain 
+                ? (currentOptions.xAxis.data?.length ?? Math.max(1, Math.floor(baseMax - baseMin + 1)))
+                : Math.max(1, Math.floor(baseMax - baseMin + 1));
+              if (Number.isFinite(n) && n >= 1) {
+                baseMin = -0.5;
+                baseMax = n - 1 + 0.5;
+              }
+            }
+            cellXDomain = normalizeDomain(baseMin, baseMax);
+          }
+          let cellYDomain: { min: number; max: number };
+          if (sharedYDomain) {
+            cellYDomain = { min: sharedYDomain.min, max: sharedYDomain.max };
+          } else {
+            const b = computeGlobalBounds(cellSeries);
+            const explicitMin = finiteOrUndefined(currentOptions.yAxis.min);
+            const explicitMax = finiteOrUndefined(currentOptions.yAxis.max);
+            cellYDomain = normalizeDomain(explicitMin ?? b.yMin, explicitMax ?? b.yMax);
+          }
+          const cellVisibleXDomain = sharedXDomain ? { ...visibleXDomain } : computeVisibleXDomain(cellXDomain, zoomRange);
+          const cellPlotClipRect = computePlotClipRect(cellGridArea);
+          const cellPlotScissor = computePlotScissorDevicePx(cellGridArea);
+          // Use cell-local NDC (-1..1) so that with setViewport per cell, content is drawn in the correct region (avoids full-canvas NDC + scissor issues on some drivers).
+          const cellLocalGridArea: GridArea = {
+            left: 0,
+            right: 0,
+            top: 0,
+            bottom: 0,
+            canvasWidth: Math.max(1, cellPlotScissor.w),
+            canvasHeight: Math.max(1, cellPlotScissor.h),
+            devicePixelRatio: 1,
+          };
+          const cellXScale = createLinearScale().domain(cellXDomain.min, cellXDomain.max).range(-1, 1);
+          const cellYScale = createLinearScale().domain(cellYDomain.min, cellYDomain.max).range(-1, 1);
+          const drawXAxis = !hasFy || row === facetLayout.nRows - 1;
+          const drawYAxis = !hasFx || col === 0;
+          const cellGridOptions: { color: string; verticalPositionsClip?: number[]; horizontalPositionsClip?: number[] } = { color: currentOptions.theme.gridLineColor };
+          if (hasCartesianSeries) {
+            const cellXTickCount =
+              currentOptions.xAxis.type === 'category'
+                ? (currentOptions.xAxis.data ?? []).length
+                : resolveTickCount(currentOptions.xAxis.splitNumber, DEFAULT_TICK_COUNT);
+            const cellXTickValues =
+              currentOptions.xAxis.type === 'category'
+                ? (currentOptions.xAxis.data ?? []).map((_: string, i: number) => i)
+                : generateLinearTicks(cellXDomain.min, cellXDomain.max, cellXTickCount);
+            if (cellXTickValues.length > 0) {
+              cellGridOptions.verticalPositionsClip = cellXTickValues.map((v) => cellXScale.scale(v));
+            }
+            if (yTickValues.length > 0) {
+              cellGridOptions.horizontalPositionsClip = yTickValues.map((v) => cellYScale.scale(v));
+            }
+          }
+          const cellBarSeriesConfigs: ResolvedBarSeriesConfig[] = [];
+          for (let i = 0; i < cellSeries.length; i++) {
+            const s = cellSeries[i];
+            if (s?.type === 'bar') {
+              cellBarSeriesConfigs.push(s);
+            } else if (s?.type === 'histogram') {
+              const h = s as ResolvedHistogramSeriesConfig;
+              const points = s.data as ReadonlyArray<DataPoint> | undefined;
+              const values: number[] =
+                points && points.length > 0
+                  ? points
+                      .map((p) => {
+                        const pt = p as { x?: number; y?: number };
+                        const y = Array.isArray(p) ? (p as DataPointTuple)[1] : pt.y;
+                        const x = Array.isArray(p) ? (p as DataPointTuple)[0] : pt.x;
+                        return Number.isFinite(y) ? y! : Number.isFinite(x) ? x! : NaN;
+                      })
+                      .filter((v) => Number.isFinite(v))
+                  : [];
+              const { binEdges, counts } = computeHistogramBins(values, h.binWidth);
+              const barData: Array<{ x: number; y: number }> = [];
+              for (let k = 0; k < counts.length; k++) {
+                const left = binEdges[k]!;
+                const right = binEdges[k + 1]!;
+                barData.push({ x: (left + right) / 2, y: counts[k]! });
+              }
+              cellBarSeriesConfigs.push({
+                type: 'bar',
+                name: h.name,
+                color: h.color,
+                data: barData,
+                rawData: barData,
+                sampling: 'none',
+                samplingThreshold: 0,
+              });
+            }
+          }
+          facetCells.push({
+            gridArea: cellGridArea,
+            cellLocalGridArea,
+            series: cellSeries,
+            xScale: cellXScale,
+            yScale: cellYScale,
+            yDomain: cellYDomain,
+            plotClipRect: cellPlotClipRect,
+            plotScissor: cellPlotScissor,
+            gridOptions: cellGridOptions,
+            drawXAxis,
+            drawYAxis,
+            barSeriesConfigs: cellBarSeriesConfigs,
+            visibleXDomain: cellVisibleXDomain,
+          });
+        }
+      }
+    }
+
+    eventManager?.updateFacetCells(facetLayout ? facetCells.map((c) => c.gridArea) : null);
+    let interactionScalesForInteraction = interactionScales;
+    // Facet cells: use logical plot size (useLogicalSize: true) so scale range matches event manager gridX/gridY.
+    // Render uses same cellGridArea: computePlotScissorDevicePx(cellGridArea) gives device px; logical plot size = canvasWidth/dpr - left - right, same as getPlotSizeCssPx(..., { useLogicalSize: true }).
+    if (facetLayout && pointerState.facetCellIndex != null && facetCells[pointerState.facetCellIndex]) {
+      const facetCell = facetCells[pointerState.facetCellIndex];
+      interactionScalesForInteraction = computeInteractionScalesGridCssPx(facetCell.gridArea, {
+        xDomain: facetCell.visibleXDomain,
+        yDomain: facetCell.yDomain,
+      }, true);
+      lastInteractionScales = interactionScalesForInteraction;
+      // Diagnostic: facet cell domains come from filterSeriesForFacetCell + computeGlobalBounds(cellSeries) or shared visibleXDomain/yBaseDomain (see facet cell build ~3870-3956).
+      console.log('[DEBUG facet] interaction scales for cell:', {
+        facetCellIndex: pointerState.facetCellIndex,
+        gridX: pointerState.gridX,
+        gridY: pointerState.gridY,
+        xDomain: facetCell.visibleXDomain,
+        yDomain: facetCell.yDomain,
+        plotWidthCss: interactionScalesForInteraction?.plotWidthCss,
+        plotHeightCss: interactionScalesForInteraction?.plotHeightCss,
+        xScaleRange: interactionScalesForInteraction ? [0, interactionScalesForInteraction.plotWidthCss] : undefined,
+        seriesCount: facetCell.series.length,
+      });
+    }
+    const seriesForInteraction =
+      facetLayout && pointerState.facetCellIndex != null && facetCells[pointerState.facetCellIndex]
+        ? facetCells[pointerState.facetCellIndex].series
+        : seriesForRender;
+    const pointerGridArea =
+      facetLayout && pointerState.facetCellIndex != null && facetCells[pointerState.facetCellIndex]
+        ? facetCells[pointerState.facetCellIndex].gridArea
+        : gridArea;
+
+    if (!facetLayout) {
+    // Align grid with axis ticks for all cartesian charts (x and y)
+    const gridOptions: {
+      color: string;
+      verticalPositionsClip?: number[];
+      horizontalPositionsClip?: number[];
+    } = { color: currentOptions.theme.gridLineColor };
+    if (hasCartesianSeries) {
+      // xScale/yScale already map data -> clip space (plotClipRect is in clip space)
+      if (xTickValues.length > 0) {
+        gridOptions.verticalPositionsClip = xTickValues.map((v) => xScale.scale(v));
+      }
+      if (yTickValues.length > 0) {
+        gridOptions.horizontalPositionsClip = yTickValues.map((v) => yScale.scale(v));
+      }
+    }
+    gridRenderer.prepare(gridArea, gridOptions);
     if (hasCartesianSeries) {
       xAxisRenderer.prepare(
         currentOptions.xAxis,
@@ -3486,11 +4246,58 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         gridArea,
         currentOptions.theme.axisLineColor,
         currentOptions.theme.axisTickColor,
-        DEFAULT_TICK_COUNT
+        yTickCount
       );
     }
+    }
 
-    // Crosshair prepare uses canvas-local CSS px (EventManager payload x/y) and current gridArea.
+    // Heatmap color scale bar: show gradient from min to max above the plot when any heatmap series is present.
+    const firstHeatmapSeries = seriesForRender.find((s) => s.type === 'heatmap');
+    if (heatmapColorScaleBar) {
+      if (firstHeatmapSeries && firstHeatmapSeries.type === 'heatmap' && firstHeatmapSeries.data.length > 0) {
+        let valueMin = Number.POSITIVE_INFINITY;
+        let valueMax = Number.NEGATIVE_INFINITY;
+        for (let i = 0; i < seriesForRender.length; i++) {
+          const s = seriesForRender[i];
+          if (s.type === 'heatmap') {
+            for (const pt of s.data) {
+              if (Number.isFinite(pt.value)) {
+                if (pt.value < valueMin) valueMin = pt.value;
+                if (pt.value > valueMax) valueMax = pt.value;
+              }
+            }
+          }
+        }
+        if (!Number.isFinite(valueMin)) valueMin = 0;
+        if (!Number.isFinite(valueMax)) valueMax = 1;
+        const canvasWidthCss = gridArea.canvasWidth / gridArea.devicePixelRatio;
+        const canvasHeightCss = gridArea.canvasHeight / gridArea.devicePixelRatio;
+        heatmapColorScaleBar.update({
+          valueMin,
+          valueMax,
+          gradientStops: getHeatmapColormapCssStops(firstHeatmapSeries.colormap),
+          gridArea,
+          canvasWidthCss,
+          canvasHeightCss,
+          visible: true,
+          seriesName: firstHeatmapSeries.name,
+          textColor: currentOptions.theme.textColor,
+          fontSize: currentOptions.theme.fontSize,
+        });
+      } else {
+        heatmapColorScaleBar.update({
+          valueMin: 0,
+          valueMax: 1,
+          gradientStops: [],
+          gridArea,
+          canvasWidthCss: gridArea.canvasWidth / gridArea.devicePixelRatio,
+          canvasHeightCss: gridArea.canvasHeight / gridArea.devicePixelRatio,
+          visible: false,
+        });
+      }
+    }
+
+    // Crosshair prepare uses canvas-local CSS px (EventManager payload x/y) and current gridArea (or facet cell).
     if (effectivePointer.hasPointer && effectivePointer.isInGrid) {
       const crosshairOptions: CrosshairRenderOptions = {
         showX: true,
@@ -3499,39 +4306,43 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         color: withAlpha(currentOptions.theme.axisLineColor, 0.6),
         lineWidth: DEFAULT_CROSSHAIR_LINE_WIDTH_CSS_PX,
       };
-      crosshairRenderer.prepare(effectivePointer.x, effectivePointer.y, gridArea, crosshairOptions);
+      crosshairRenderer.prepare(effectivePointer.x, effectivePointer.y, pointerGridArea, crosshairOptions);
       crosshairRenderer.setVisible(true);
     } else {
       crosshairRenderer.setVisible(false);
     }
 
     // Highlight: on hover, find nearest point and draw a ring highlight clipped to plot rect.
+    // Use a larger maxDistance in facet mode so tooltip/highlight are more reliable in smaller cells.
+    const nearestPointMaxDistance =
+      facetLayout && pointerState.facetCellIndex != null ? 40 : undefined;
     if (effectivePointer.source === 'mouse' && effectivePointer.hasPointer && effectivePointer.isInGrid) {
-      if (interactionScales) {
+      if (interactionScalesForInteraction) {
         const match = findNearestPoint(
-          seriesForRender,
+          seriesForInteraction,
           effectivePointer.gridX,
           effectivePointer.gridY,
-          interactionScales.xScale,
-          interactionScales.yScale
+          interactionScalesForInteraction.xScale,
+          interactionScalesForInteraction.yScale,
+          nearestPointMaxDistance
         );
 
         if (match) {
           const { x, y } = getPointXY(match.point);
-          const xGridCss = interactionScales.xScale.scale(x);
-          const yGridCss = interactionScales.yScale.scale(y);
+          const xGridCss = interactionScalesForInteraction.xScale.scale(x);
+          const yGridCss = interactionScalesForInteraction.yScale.scale(y);
 
           if (Number.isFinite(xGridCss) && Number.isFinite(yGridCss)) {
-            const centerCssX = gridArea.left + xGridCss;
-            const centerCssY = gridArea.top + yGridCss;
+            const centerCssX = pointerGridArea.left + xGridCss;
+            const centerCssY = pointerGridArea.top + yGridCss;
 
-            const plotScissor = computePlotScissorDevicePx(gridArea);
+            const plotScissor = computePlotScissorDevicePx(pointerGridArea);
             const point: HighlightPoint = {
-              centerDeviceX: centerCssX * gridArea.devicePixelRatio,
-              centerDeviceY: centerCssY * gridArea.devicePixelRatio,
-              devicePixelRatio: gridArea.devicePixelRatio,
-              canvasWidth: gridArea.canvasWidth,
-              canvasHeight: gridArea.canvasHeight,
+              centerDeviceX: centerCssX * pointerGridArea.devicePixelRatio,
+              centerDeviceY: centerCssY * pointerGridArea.devicePixelRatio,
+              devicePixelRatio: pointerGridArea.devicePixelRatio,
+              canvasWidth: pointerGridArea.canvasWidth,
+              canvasHeight: pointerGridArea.canvasHeight,
               scissor: plotScissor,
             };
 
@@ -3556,7 +4367,7 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
     if (effectivePointer.hasPointer && effectivePointer.isInGrid && currentOptions.tooltip?.show !== false) {
       const canvas = gpuContext.canvas;
 
-      if (interactionScales && canvas && isHTMLCanvasElement(canvas)) {
+      if (interactionScalesForInteraction && canvas && isHTMLCanvasElement(canvas)) {
         const formatter = currentOptions.tooltip?.formatter;
         const trigger = currentOptions.tooltip?.trigger ?? 'item';
 
@@ -3568,11 +4379,15 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
           // - Tooltip should be driven by x only (no y).
           // - In 'axis' mode, show one entry per series nearest in x.
           // - In 'item' mode, pick a deterministic single entry (first matching series).
-          const matches = findPointsAtX(seriesForRender, effectivePointer.gridX, interactionScales.xScale);
+          const matches = findPointsAtX(seriesForInteraction, effectivePointer.gridX, interactionScalesForInteraction.xScale);
           if (matches.length === 0) {
             hideTooltip();
           } else if (trigger === 'axis') {
-            const paramsArray = matches.map((m) => buildTooltipParams(m.seriesIndex, m.dataIndex, m.point));
+            const paramsArray = matches.map((m) =>
+              seriesForInteraction[m.seriesIndex]?.type === 'heatmap'
+                ? buildHeatmapTooltipParams(m.seriesIndex, m.dataIndex, m.point as HeatmapDataPoint)
+                : buildTooltipParams(m.seriesIndex, m.dataIndex, m.point),
+            );
             const content = formatter
               ? (formatter as (p: ReadonlyArray<TooltipParams>) => string)(paramsArray)
               : formatTooltipAxis(paramsArray);
@@ -3586,7 +4401,10 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
             }
           } else {
             const m0 = matches[0];
-            const params = buildTooltipParams(m0.seriesIndex, m0.dataIndex, m0.point);
+            const params =
+              seriesForInteraction[m0.seriesIndex]?.type === 'heatmap'
+                ? buildHeatmapTooltipParams(m0.seriesIndex, m0.dataIndex, m0.point as HeatmapDataPoint)
+                : buildTooltipParams(m0.seriesIndex, m0.dataIndex, m0.point);
             const content = formatter ? (formatter as (p: TooltipParams) => string)(params) : formatTooltipItem(params);
             if (content && (content !== lastTooltipContent || containerX !== lastTooltipX || containerY !== lastTooltipY)) {
               lastTooltipContent = content;
@@ -3601,11 +4419,11 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
           // Story 4.14: pie slice tooltip hit-testing (mouse only).
           // If the cursor is over a pie slice, prefer showing that slice tooltip.
           const pieMatch = findPieSliceAtPointer(
-            seriesForRender,
+            seriesForInteraction,
             effectivePointer.gridX,
             effectivePointer.gridY,
-            interactionScales.plotWidthCss,
-            interactionScales.plotHeightCss
+            interactionScalesForInteraction.plotWidthCss,
+            interactionScalesForInteraction.plotHeightCss
           );
 
           if (pieMatch) {
@@ -3631,13 +4449,13 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
           } else {
             // Candlestick body hit-testing (mouse, axis trigger): include only when inside candle body.
             const candlestickResult = findCandlestickAtPointer(
-              seriesForRender,
+              seriesForInteraction,
               effectivePointer.gridX,
               effectivePointer.gridY,
-              interactionScales
+              interactionScalesForInteraction
             );
 
-            const matches = findPointsAtX(seriesForRender, effectivePointer.gridX, interactionScales.xScale);
+            const matches = findPointsAtX(seriesForInteraction, effectivePointer.gridX, interactionScalesForInteraction.xScale);
             if (matches.length === 0) {
               if (candlestickResult) {
                 const paramsArray = [candlestickResult.params];
@@ -3648,9 +4466,9 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
                   // Use candlestick anchor for tooltip positioning
                   const anchor = computeCandlestickTooltipAnchor(
                     candlestickResult.match,
-                    interactionScales.xScale,
-                    interactionScales.yScale,
-                    gridArea,
+                    interactionScalesForInteraction.xScale,
+                    interactionScalesForInteraction.yScale,
+                    pointerGridArea,
                     canvas
                   );
                   const tooltipX = anchor?.x ?? containerX;
@@ -3668,7 +4486,11 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
                 hideTooltip();
               }
             } else {
-              const paramsArray = matches.map((m) => buildTooltipParams(m.seriesIndex, m.dataIndex, m.point));
+              const paramsArray = matches.map((m) =>
+                seriesForInteraction[m.seriesIndex]?.type === 'heatmap'
+                  ? buildHeatmapTooltipParams(m.seriesIndex, m.dataIndex, m.point as HeatmapDataPoint)
+                  : buildTooltipParams(m.seriesIndex, m.dataIndex, m.point),
+              );
               if (candlestickResult) paramsArray.push(candlestickResult.params);
               const content = formatter
                 ? (formatter as (p: ReadonlyArray<TooltipParams>) => string)(paramsArray)
@@ -3680,9 +4502,9 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
                 if (candlestickResult) {
                   const anchor = computeCandlestickTooltipAnchor(
                     candlestickResult.match,
-                    interactionScales.xScale,
-                    interactionScales.yScale,
-                    gridArea,
+                    interactionScalesForInteraction.xScale,
+                    interactionScalesForInteraction.yScale,
+                    pointerGridArea,
                     canvas
                   );
                   if (anchor) {
@@ -3705,11 +4527,11 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
           // Story 4.14: pie slice tooltip hit-testing (mouse only).
           // If the cursor is over a pie slice, prefer showing that slice tooltip.
           const pieMatch = findPieSliceAtPointer(
-            seriesForRender,
+            seriesForInteraction,
             effectivePointer.gridX,
             effectivePointer.gridY,
-            interactionScales.plotWidthCss,
-            interactionScales.plotHeightCss
+            interactionScalesForInteraction.plotWidthCss,
+            interactionScalesForInteraction.plotHeightCss
           );
 
           if (pieMatch) {
@@ -3734,10 +4556,10 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
           } else {
             // Candlestick body hit-testing (mouse, item trigger): prefer candle body over nearest-point logic.
             const candlestickResult = findCandlestickAtPointer(
-              seriesForRender,
+              seriesForInteraction,
               effectivePointer.gridX,
               effectivePointer.gridY,
-              interactionScales
+              interactionScalesForInteraction
             );
             if (candlestickResult) {
               const content = formatter
@@ -3747,9 +4569,9 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
                 // Use candlestick anchor for tooltip positioning
                 const anchor = computeCandlestickTooltipAnchor(
                   candlestickResult.match,
-                  interactionScales.xScale,
-                  interactionScales.yScale,
-                  gridArea,
+                  interactionScalesForInteraction.xScale,
+                  interactionScalesForInteraction.yScale,
+                  pointerGridArea,
                   canvas
                 );
                 const tooltipX = anchor?.x ?? containerX;
@@ -3767,16 +4589,20 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
             }
 
             const match = findNearestPoint(
-              seriesForRender,
+              seriesForInteraction,
               effectivePointer.gridX,
               effectivePointer.gridY,
-              interactionScales.xScale,
-              interactionScales.yScale
+              interactionScalesForInteraction.xScale,
+              interactionScalesForInteraction.yScale,
+              nearestPointMaxDistance
             );
             if (!match) {
               hideTooltip();
             } else {
-              const params = buildTooltipParams(match.seriesIndex, match.dataIndex, match.point);
+              const params =
+                seriesForInteraction[match.seriesIndex]?.type === 'heatmap'
+                  ? buildHeatmapTooltipParams(match.seriesIndex, match.dataIndex, match.point as HeatmapDataPoint)
+                  : buildTooltipParams(match.seriesIndex, match.dataIndex, match.point);
               const content = formatter
                 ? (formatter as (p: TooltipParams) => string)(params)
                 : formatTooltipItem(params);
@@ -3798,6 +4624,7 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
           hideTooltip();
         }
 
+    if (!facetLayout) {
     const defaultBaseline = currentOptions.yAxis.min ?? yBaseDomain.min;
     const barSeriesConfigs: ResolvedBarSeriesConfig[] = [];
 
@@ -3809,6 +4636,23 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         case 'area': {
           const baseline = s.baseline ?? defaultBaseline;
           areaRenderers[i].prepare(s, s.data, xScale, yScale, baseline);
+          if (s.marker?.show) {
+            const markerScatter: ResolvedScatterSeriesConfig = {
+              type: 'scatter',
+              name: s.name,
+              color: s.color,
+              data: s.data,
+              rawData: s.rawData ?? s.data,
+              mode: 'points',
+              symbolSize: s.marker.symbolSize,
+              sampling: 'none',
+              samplingThreshold: 0,
+              binSize: 2,
+              densityColormap: 'viridis',
+              densityNormalization: 'log',
+            };
+            scatterRenderers[i].prepare(markerScatter, s.data, xScale, yScale, gridArea);
+          }
           break;
         }
         case 'line': {
@@ -3862,10 +4706,41 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
             areaRenderers[i].prepare(areaLike, areaLike.data, xScale, yScale, defaultBaseline);
           }
 
+          if (s.marker?.show) {
+            const markerScatter: ResolvedScatterSeriesConfig = {
+              type: 'scatter',
+              name: s.name,
+              color: s.color,
+              data: s.data,
+              rawData: s.rawData ?? s.data,
+              mode: 'points',
+              symbolSize: s.marker.symbolSize,
+              sampling: 'none',
+              samplingThreshold: 0,
+              binSize: 2,
+              densityColormap: 'viridis',
+              densityNormalization: 'log',
+            };
+            scatterRenderers[i].prepare(markerScatter, s.data, xScale, yScale, gridArea);
+          }
+
           break;
         }
         case 'bar': {
           barSeriesConfigs.push(s);
+          break;
+        }
+        case 'histogram': {
+          const syntheticBar: ResolvedBarSeriesConfig = {
+            type: 'bar',
+            name: s.name,
+            color: s.color,
+            data: s.data,
+            rawData: s.data,
+            sampling: 'none',
+            samplingThreshold: 0,
+          };
+          barSeriesConfigs.push(syntheticBar);
           break;
         }
         case 'scatter': {
@@ -3900,6 +4775,10 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
             const animated = introP < 1 ? ({ ...s, color: withAlpha(s.color, introP) } as const) : s;
             scatterRenderers[i].prepare(animated, s.data, xScale, yScale, gridArea);
           }
+          break;
+        }
+        case 'heatmap': {
+          heatmapRenderers[i].prepare([s], xScale, yScale, gridArea);
           break;
         }
         case 'pie': {
@@ -4061,6 +4940,14 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
       barRenderer.render(mainPass);
       mainPass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
     }
+    // Render heatmap series (each has its own renderer instance).
+    for (let i = 0; i < seriesForRender.length; i++) {
+      if (seriesForRender[i].type === 'heatmap' && plotScissor.w > 0 && plotScissor.h > 0) {
+        mainPass.setScissorRect(plotScissor.x, plotScissor.y, plotScissor.w, plotScissor.h);
+        heatmapRenderers[i].render(mainPass);
+        mainPass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
+      }
+    }
     for (let i = 0; i < seriesForRender.length; i++) {
       if (seriesForRender[i].type === 'candlestick') {
         candlestickRenderers[i].render(mainPass);
@@ -4073,6 +4960,14 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         scatterDensityRenderers[i].render(mainPass);
       } else {
         scatterRenderers[i].render(mainPass);
+      }
+    }
+    for (let i = 0; i < seriesForRender.length; i++) {
+      const s = seriesForRender[i];
+      if ((s.type === 'line' || s.type === 'area') && (s as { marker?: { show: boolean } }).marker?.show) {
+        mainPass.setScissorRect(plotScissor.x, plotScissor.y, plotScissor.w, plotScissor.h);
+        scatterRenderers[i].render(mainPass);
+        mainPass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
       }
     }
     for (let i = 0; i < seriesForRender.length; i++) {
@@ -4154,10 +5049,360 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
     topOverlayPass.end();
     device.queue.submit([encoder.finish()]);
 
+    } else {
+      // Facet path: per-cell prepare and render
+      highlightRenderer.setVisible(false);
+      ensureOverlayTargets(gridArea.canvasWidth, gridArea.canvasHeight);
+      const swapchainView = gpuContext.canvasContext.getCurrentTexture().createView();
+      const encoder = device.createCommandEncoder({ label: 'renderCoordinator/commandEncoder' });
+      const clearValue = parseCssColorToGPUColor(currentOptions.theme.backgroundColor, { r: 0, g: 0, b: 0, a: 1 });
+      const mainPass = encoder.beginRenderPass({
+        label: 'renderCoordinator/mainPass',
+        colorAttachments: [
+          {
+            view: mainColorView!,
+            clearValue,
+            loadOp: 'clear',
+            storeOp: 'store',
+          },
+        ],
+      });
+      const defaultBaselineFacet = currentOptions.yAxis.min ?? yBaseDomain.min;
+      const nSeries = facetCells[0]?.series.length ?? 0;
+      for (let cellIndex = 0; cellIndex < facetCells.length; cellIndex++) {
+        const cell = facetCells[cellIndex]!;
+        mainPass.setViewport(cell.plotScissor.x, cell.plotScissor.y, cell.plotScissor.w, cell.plotScissor.h, 0, 1);
+        mainPass.setScissorRect(cell.plotScissor.x, cell.plotScissor.y, cell.plotScissor.w, cell.plotScissor.h);
+        gridRenderer.prepare(cell.cellLocalGridArea, cell.gridOptions);
+        if (hasCartesianSeries) {
+          if (cell.drawXAxis) {
+            const cellXTickCount =
+              currentOptions.xAxis.type === 'category'
+                ? (currentOptions.xAxis.data?.length ?? DEFAULT_TICK_COUNT)
+                : resolveTickCount(currentOptions.xAxis.splitNumber, DEFAULT_TICK_COUNT);
+            xAxisRenderer.prepare(
+              currentOptions.xAxis,
+              cell.xScale,
+              'x',
+              cell.cellLocalGridArea,
+              currentOptions.theme.axisLineColor,
+              currentOptions.theme.axisTickColor,
+              cellXTickCount
+            );
+          }
+          if (cell.drawYAxis) {
+            yAxisRenderer.prepare(
+              currentOptions.yAxis,
+              cell.yScale,
+              'y',
+              cell.cellLocalGridArea,
+              currentOptions.theme.axisLineColor,
+              currentOptions.theme.axisTickColor,
+              yTickCount
+            );
+          }
+        }
+        for (let i = 0; i < cell.series.length; i++) {
+          const s = cell.series[i];
+          if (!s) continue;
+          const facetSeriesIndex = cellIndex * nSeries + i;
+          switch (s.type) {
+            case 'area': {
+              const baseline = s.baseline ?? defaultBaselineFacet;
+              areaVertexStore.ensureCapacity(facetSeriesIndex, s.data.length * AREA_VERTEX_STRIDE_BYTES);
+              const areaVertexCount = areaRenderers[i].prepare(
+                s,
+                s.data,
+                cell.xScale,
+                cell.yScale,
+                baseline,
+                cell.yDomain,
+                areaVertexStore.getBuffer(facetSeriesIndex)
+              );
+              areaVertexStore.setVertexCount(facetSeriesIndex, areaVertexCount);
+              if (s.marker?.show) {
+                const markerScatter: ResolvedScatterSeriesConfig = {
+                  type: 'scatter',
+                  name: s.name,
+                  color: s.color,
+                  data: s.data,
+                  rawData: s.rawData ?? s.data,
+                  mode: 'points',
+                  symbolSize: s.marker.symbolSize,
+                  sampling: 'none',
+                  samplingThreshold: 0,
+                  binSize: 2,
+                  densityColormap: 'viridis',
+                  densityNormalization: 'log',
+                };
+                scatterInstanceStore.ensureCapacity(facetSeriesIndex, s.data.length * SCATTER_INSTANCE_STRIDE_BYTES);
+                const count = scatterRenderers[i].prepare(
+                  markerScatter,
+                  s.data,
+                  cell.xScale,
+                  cell.yScale,
+                  cell.cellLocalGridArea,
+                  scatterInstanceStore.getBuffer(facetSeriesIndex)
+                );
+                scatterInstanceStore.setInstanceCount(facetSeriesIndex, count);
+              }
+              break;
+            }
+            case 'line': {
+              const xOffset = currentOptions.xAxis.type !== 'time' ? 0 : (() => {
+                const d = s.data;
+                for (let k = 0; k < d.length; k++) {
+                  const p = d[k]!;
+                  const x = isTupleDataPoint(p) ? p[0] : p.x;
+                  if (Number.isFinite(x)) return x;
+                }
+                return 0;
+              })();
+              dataStore.setSeries(facetSeriesIndex, s.data, { xOffset });
+              const buffer = dataStore.getSeriesBuffer(facetSeriesIndex);
+              // Pass yDomain for facets to ensure correct affine transformation using shared Y domain
+              lineRenderers[i].prepare(s, buffer, cell.xScale, cell.yScale, xOffset, cell.yDomain);
+              if (s.areaStyle) {
+                const areaLike: ResolvedAreaSeriesConfig = {
+                  type: 'area',
+                  name: s.name,
+                  rawData: s.data,
+                  data: s.data,
+                  color: s.areaStyle.color,
+                  areaStyle: s.areaStyle,
+                  sampling: s.sampling,
+                  samplingThreshold: s.samplingThreshold,
+                };
+                areaVertexStore.ensureCapacity(facetSeriesIndex, areaLike.data.length * AREA_VERTEX_STRIDE_BYTES);
+                const areaVertexCountLineArea = areaRenderers[i].prepare(
+                  areaLike,
+                  areaLike.data,
+                  cell.xScale,
+                  cell.yScale,
+                  defaultBaselineFacet,
+                  cell.yDomain,
+                  areaVertexStore.getBuffer(facetSeriesIndex)
+                );
+                areaVertexStore.setVertexCount(facetSeriesIndex, areaVertexCountLineArea);
+              }
+              if (s.marker?.show) {
+                const markerScatter: ResolvedScatterSeriesConfig = {
+                  type: 'scatter',
+                  name: s.name,
+                  color: s.color,
+                  data: s.data,
+                  rawData: s.rawData ?? s.data,
+                  mode: 'points',
+                  symbolSize: s.marker.symbolSize,
+                  sampling: 'none',
+                  samplingThreshold: 0,
+                  binSize: 2,
+                  densityColormap: 'viridis',
+                  densityNormalization: 'log',
+                };
+                scatterInstanceStore.ensureCapacity(facetSeriesIndex, s.data.length * SCATTER_INSTANCE_STRIDE_BYTES);
+                const count = scatterRenderers[i].prepare(
+                  markerScatter,
+                  s.data,
+                  cell.xScale,
+                  cell.yScale,
+                  cell.cellLocalGridArea,
+                  scatterInstanceStore.getBuffer(facetSeriesIndex)
+                );
+                scatterInstanceStore.setInstanceCount(facetSeriesIndex, count);
+              }
+              break;
+            }
+            case 'bar':
+              break;
+            case 'scatter': {
+              if (s.mode === 'density') {
+                const rawData = s.rawData ?? s.data;
+                const visible = findVisibleRangeIndicesByX(rawData, cell.visibleXDomain.min, cell.visibleXDomain.max);
+                dataStore.setSeries(facetSeriesIndex, rawData);
+                const buffer = dataStore.getSeriesBuffer(facetSeriesIndex);
+                const pointCount = dataStore.getSeriesPointCount(facetSeriesIndex);
+                scatterDensityRenderers[i].prepare(s, buffer, pointCount, visible.start, visible.end, cell.xScale, cell.yScale, cell.cellLocalGridArea, s.rawBounds);
+              } else {
+                scatterInstanceStore.ensureCapacity(facetSeriesIndex, s.data.length * SCATTER_INSTANCE_STRIDE_BYTES);
+                const count = scatterRenderers[i].prepare(
+                  s,
+                  s.data,
+                  cell.xScale,
+                  cell.yScale,
+                  cell.cellLocalGridArea,
+                  scatterInstanceStore.getBuffer(facetSeriesIndex)
+                );
+                scatterInstanceStore.setInstanceCount(facetSeriesIndex, count);
+              }
+              break;
+            }
+            default:
+              break;
+          }
+        }
+        let totalBarInstances = 0;
+        for (let b = 0; b < cell.barSeriesConfigs.length; b++) {
+          totalBarInstances += cell.barSeriesConfigs[b]!.data.length;
+        }
+        barInstanceStore.ensureCapacity(cellIndex, totalBarInstances * BAR_INSTANCE_STRIDE_BYTES);
+        const barInstanceCount = barRenderer.prepare(
+          cell.barSeriesConfigs,
+          dataStore,
+          cell.xScale,
+          cell.yScale,
+          cell.cellLocalGridArea,
+          barInstanceStore.getBuffer(cellIndex)
+        );
+        barInstanceStore.setInstanceCount(cellIndex, barInstanceCount);
+        for (let i = 0; i < cell.series.length; i++) {
+          const si = cell.series[i];
+          if (si?.type === 'scatter' && 'mode' in si && si.mode === 'density') {
+            scatterDensityRenderers[i].encodeCompute(encoder);
+          }
+        }
+        mainPass.setScissorRect(cell.plotScissor.x, cell.plotScissor.y, cell.plotScissor.w, cell.plotScissor.h);
+        gridRenderer.render(mainPass);
+        for (let i = 0; i < cell.series.length; i++) {
+          if (shouldRenderArea(cell.series[i])) {
+            const s = cell.series[i];
+            const facetSeriesIndexArea = cellIndex * nSeries + i;
+            const baselineArea = s?.type === 'area' ? (s.baseline ?? defaultBaselineFacet) : defaultBaselineFacet;
+            areaRenderers[i].setCellUniforms(cell.xScale, cell.yScale, baselineArea, cell.yDomain, s as ResolvedAreaSeriesConfig);
+            areaRenderers[i].render(
+              mainPass,
+              areaVertexStore.getBuffer(facetSeriesIndexArea),
+              areaVertexStore.getVertexCount(facetSeriesIndexArea)
+            );
+          }
+        }
+        if (cell.plotScissor.w > 0 && cell.plotScissor.h > 0) {
+          barRenderer.render(
+            mainPass,
+            barInstanceStore.getBuffer(cellIndex),
+            barInstanceStore.getInstanceCount(cellIndex)
+          );
+        }
+        for (let i = 0; i < cell.series.length; i++) {
+          const s = cell.series[i];
+          if (s?.type === 'scatter') {
+            if ('mode' in s && s.mode === 'density') {
+              scatterDensityRenderers[i].render(mainPass);
+            } else {
+              const facetSeriesIndex = cellIndex * nSeries + i;
+              scatterRenderers[i].setCellUniforms(cell.xScale, cell.yScale, cell.cellLocalGridArea, s);
+              scatterRenderers[i].render(
+                mainPass,
+                scatterInstanceStore.getBuffer(facetSeriesIndex),
+                scatterInstanceStore.getInstanceCount(facetSeriesIndex)
+              );
+            }
+          }
+          const si = cell.series[i];
+          if (si && (si.type === 'line' || si.type === 'area') && 'marker' in si && (si as ResolvedAreaSeriesConfig).marker?.show) {
+            const facetSeriesIndexMarker = cellIndex * nSeries + i;
+            const resolvedWithMarker = si as ResolvedAreaSeriesConfig;
+            const markerScatter: ResolvedScatterSeriesConfig = {
+              type: 'scatter',
+              name: si.name,
+              color: si.color,
+              data: si.data,
+              rawData: si.rawData ?? si.data,
+              mode: 'points',
+              symbolSize: resolvedWithMarker.marker?.symbolSize ?? 4,
+              sampling: 'none',
+              samplingThreshold: 0,
+              binSize: 2,
+              densityColormap: 'viridis',
+              densityNormalization: 'log',
+            };
+            scatterRenderers[i].setCellUniforms(cell.xScale, cell.yScale, cell.cellLocalGridArea, markerScatter);
+            scatterRenderers[i].render(
+              mainPass,
+              scatterInstanceStore.getBuffer(facetSeriesIndexMarker),
+              scatterInstanceStore.getInstanceCount(facetSeriesIndexMarker)
+            );
+          }
+        }
+        for (let i = 0; i < cell.series.length; i++) {
+          if (cell.series[i]?.type === 'line') {
+            lineRenderers[i].render(mainPass);
+          }
+        }
+        mainPass.setViewport(0, 0, gridArea.canvasWidth, gridArea.canvasHeight, 0, 1);
+        mainPass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
+      }
+      mainPass.end();
+      const overlayPassFacet = encoder.beginRenderPass({
+        label: 'renderCoordinator/annotationOverlayMsaaPass',
+        colorAttachments: [
+          {
+            view: overlayMsaaView!,
+            resolveTarget: swapchainView,
+            clearValue,
+            loadOp: 'clear',
+            storeOp: 'discard',
+          },
+        ],
+      });
+      overlayPassFacet.setPipeline(overlayBlitPipeline);
+      overlayPassFacet.setBindGroup(0, overlayBlitBindGroup!);
+      overlayPassFacet.draw(3);
+      overlayPassFacet.end();
+      const topOverlayPass = encoder.beginRenderPass({
+        label: 'renderCoordinator/topOverlayPass',
+        colorAttachments: [
+          { view: swapchainView, loadOp: 'load', storeOp: 'store' },
+        ],
+      });
+      highlightRenderer.render(topOverlayPass);
+      for (const cell of facetCells) {
+        if (hasCartesianSeries) {
+          if (cell.drawXAxis) {
+            const cellXTickCount =
+              currentOptions.xAxis.type === 'category'
+                ? (currentOptions.xAxis.data?.length ?? DEFAULT_TICK_COUNT)
+                : resolveTickCount(currentOptions.xAxis.splitNumber, DEFAULT_TICK_COUNT);
+            xAxisRenderer.prepare(
+              currentOptions.xAxis,
+              cell.xScale,
+              'x',
+              cell.cellLocalGridArea,
+              currentOptions.theme.axisLineColor,
+              currentOptions.theme.axisTickColor,
+              cellXTickCount
+            );
+          }
+          if (cell.drawYAxis) {
+            yAxisRenderer.prepare(
+              currentOptions.yAxis,
+              cell.yScale,
+              'y',
+              cell.cellLocalGridArea,
+              currentOptions.theme.axisLineColor,
+              currentOptions.theme.axisTickColor,
+              yTickCount
+            );
+          }
+        }
+        topOverlayPass.setViewport(cell.plotScissor.x, cell.plotScissor.y, cell.plotScissor.w, cell.plotScissor.h, 0, 1);
+        topOverlayPass.setScissorRect(cell.plotScissor.x, cell.plotScissor.y, cell.plotScissor.w, cell.plotScissor.h);
+        if (hasCartesianSeries) {
+          xAxisRenderer.render(topOverlayPass);
+          yAxisRenderer.render(topOverlayPass);
+        }
+        topOverlayPass.setViewport(0, 0, gridArea.canvasWidth, gridArea.canvasHeight, 0, 1);
+        topOverlayPass.setScissorRect(0, 0, gridArea.canvasWidth, gridArea.canvasHeight);
+      }
+      crosshairRenderer.render(topOverlayPass);
+      topOverlayPass.end();
+      device.queue.submit([encoder.finish()]);
+    }
+
     hasRenderedOnce = true;
 
-    // Generate axis labels for DOM overlay
-    const shouldGenerateAxisLabels = hasCartesianSeries && (axisLabelOverlay && overlayContainer);
+    // Generate axis labels for DOM overlay (skip in facet mode; could extend to per-cell later)
+    const shouldGenerateAxisLabels = hasCartesianSeries && !facetLayout && (axisLabelOverlay && overlayContainer);
 
     if (shouldGenerateAxisLabels) {
       const canvas = gpuContext.canvas;
@@ -4192,19 +5437,30 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         return createTickFormatter(xTickStep);
       })();
 
+      const xTickRotation = currentOptions.xAxis.tickLabelRotation ?? 0;
+      
       for (let i = 0; i < xTickValues.length; i++) {
         const v = xTickValues[i]!;
         const xClip = xScale.scale(v);
         const xCss = clipXToCanvasCssPx(xClip, canvasCssWidth);
 
-        const anchor: TextOverlayAnchor =
-          xTickValues.length === 1 ? 'middle' : i === 0 ? 'start' : i === xTickValues.length - 1 ? 'end' : 'middle';
+        // When labels are rotated, use consistent anchor (end for negative rotation, start for positive).
+        // For category axis, center all labels (first and last included) so they align under their bars.
+        let anchor: TextOverlayAnchor;
+        if (xTickRotation !== 0) {
+          anchor = xTickRotation < 0 ? 'end' : 'start';
+        } else if (isCategoryXAxis || xTickValues.length === 1) {
+          anchor = 'middle';
+        } else {
+          anchor = i === 0 ? 'start' : i === xTickValues.length - 1 ? 'end' : 'middle';
+        }
+        
         const label = isCategoryXAxis
           ? (xCategoryLabels[i] ?? String(v))
           : isTimeXAxis
             ? formatTimeTickValue(v, visibleXRangeMs)
             : formatTickValue(xFormatter!, v);
-        if (label == null) continue;
+        if (label == null || label === '') continue;
 
         // Add to DOM overlay
         if (axisLabelOverlay) {
@@ -4212,35 +5468,40 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
             fontSize: currentOptions.theme.fontSize,
             color: currentOptions.theme.textColor,
             anchor,
+            rotation: xTickRotation,
           });
           styleAxisLabelSpan(span, false, currentOptions.theme);
         }
       }
 
-      const yTickCount = DEFAULT_TICK_COUNT;
       const yTickLengthCssPx = currentOptions.yAxis.tickLength ?? DEFAULT_TICK_LENGTH_CSS_PX;
-      const yDomainMin = finiteOrUndefined(currentOptions.yAxis.min) ?? yScale.invert(plotClipRect.bottom);
-      const yDomainMax = finiteOrUndefined(currentOptions.yAxis.max) ?? yScale.invert(plotClipRect.top);
-      const yTickStep = yTickCount === 1 ? 0 : (yDomainMax - yDomainMin) / (yTickCount - 1);
-      const yFormatter = createTickFormatter(yTickStep);
       const yLabelX = plotLeftCss - yTickLengthCssPx - LABEL_PADDING_CSS_PX;
       const ySpans: HTMLSpanElement[] = [];
+      const isCategoryYAxis = currentOptions.yAxis.type === 'category';
+      const yFormatter = !isCategoryYAxis && yTickValues.length > 1
+        ? createTickFormatter((yTickValues[yTickValues.length - 1]! - yTickValues[0]!) / (yTickValues.length - 1))
+        : null;
 
-      for (let i = 0; i < yTickCount; i++) {
-        const t = yTickCount === 1 ? 0.5 : i / (yTickCount - 1);
-        const v = yDomainMin + t * (yDomainMax - yDomainMin);
+      for (let i = 0; i < yTickValues.length; i++) {
+        const v = yTickValues[i]!;
         const yClip = yScale.scale(v);
         const yCss = clipYToCanvasCssPx(yClip, canvasCssHeight);
 
-        const label = formatTickValue(yFormatter, v);
-        if (label == null) continue;
+        const label = isCategoryYAxis
+          ? (yCategoryLabels[i] ?? String(v))
+          : yFormatter != null
+            ? formatTickValue(yFormatter, v)
+            : formatTickValue(createTickFormatter(0), v);
+        if (label == null || label === '') continue;
 
         // Add to DOM overlay
         if (axisLabelOverlay) {
+          const yTickRotation = currentOptions.yAxis.tickLabelRotation ?? 0;
           const span = axisLabelOverlay.addLabel(label, offsetX + yLabelX, offsetY + yCss, {
             fontSize: currentOptions.theme.fontSize,
             color: currentOptions.theme.textColor,
             anchor: 'end',
+            rotation: yTickRotation,
           });
           styleAxisLabelSpan(span, false, currentOptions.theme);
           ySpans.push(span);
@@ -4263,14 +5524,22 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         const sliderTrackHeightCssPx = 32; // Keep in sync with ChartGPU/createDataZoomSlider defaults.
         const bottomLimitCss = hasSliderZoom ? canvasCssHeight - sliderTrackHeightCssPx : canvasCssHeight;
         const xTitleY = (xTickLabelsBottom + bottomLimitCss) / 2;
+        const xTitleOffset = currentOptions.xAxis.titleOffset;
+        const xTitleDx = (xTitleOffset != null && xTitleOffset[0] != null) ? xTitleOffset[0] : 0;
+        const xTitleDy = (xTitleOffset != null && xTitleOffset[1] != null) ? xTitleOffset[1] : 0;
 
         // Add to DOM overlay
         if (axisLabelOverlay) {
-          const span = axisLabelOverlay.addLabel(xAxisName, offsetX + xCenter, offsetY + xTitleY, {
-            fontSize: axisNameFontSize,
-            color: currentOptions.theme.textColor,
-            anchor: 'middle',
-          });
+          const span = axisLabelOverlay.addLabel(
+            xAxisName,
+            offsetX + xCenter + xTitleDx,
+            offsetY + xTitleY + xTitleDy,
+            {
+              fontSize: axisNameFontSize,
+              color: currentOptions.theme.textColor,
+              anchor: 'middle',
+            }
+          );
           styleAxisLabelSpan(span, true, currentOptions.theme);
         }
       }
@@ -4286,9 +5555,126 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         const yTickLabelLeft = yLabelX - maxTickLabelWidth;
         const yTitleX = yTickLabelLeft - LABEL_PADDING_CSS_PX - axisNameFontSize * 0.5;
 
+        const yTitleOffset = currentOptions.yAxis.titleOffset;
+        const yTitleDx = (yTitleOffset != null && yTitleOffset[0] != null) ? yTitleOffset[0] : 0;
+        const yTitleDy = (yTitleOffset != null && yTitleOffset[1] != null) ? yTitleOffset[1] : 0;
+
         // Add to DOM overlay
         if (axisLabelOverlay) {
-          const span = axisLabelOverlay.addLabel(yAxisName, offsetX + yTitleX, offsetY + yCenter, {
+          const span = axisLabelOverlay.addLabel(
+            yAxisName,
+            offsetX + yTitleX + yTitleDx,
+            offsetY + yCenter + yTitleDy,
+            {
+              fontSize: axisNameFontSize,
+              color: currentOptions.theme.textColor,
+              anchor: 'middle',
+              rotation: -90,
+            }
+          );
+          styleAxisLabelSpan(span, true, currentOptions.theme);
+        }
+      }
+    }
+
+    // Generate axis labels for facet mode (one set per cell that draws that axis).
+    const shouldGenerateFacetAxisLabels =
+      hasCartesianSeries && Boolean(facetLayout) && facetCells.length > 0 && (axisLabelOverlay && overlayContainer);
+    if (shouldGenerateFacetAxisLabels) {
+      const canvas = gpuContext.canvas;
+      const canvasCssWidth = getCanvasCssWidth(canvas, gpuContext.devicePixelRatio ?? 1);
+      const canvasCssHeight = getCanvasCssHeight(canvas, gpuContext.devicePixelRatio ?? 1);
+      if (canvasCssWidth > 0 && canvasCssHeight > 0) {
+        const offsetX = isHTMLCanvasElement(canvas) ? canvas.offsetLeft : 0;
+        const offsetY = isHTMLCanvasElement(canvas) ? canvas.offsetTop : 0;
+        axisLabelOverlay?.clear();
+        const xTickLengthCssPx = currentOptions.xAxis.tickLength ?? DEFAULT_TICK_LENGTH_CSS_PX;
+        const isCategoryXAxis = currentOptions.xAxis.type === 'category';
+        const xCategoryLabels = currentOptions.xAxis.type === 'category' ? (currentOptions.xAxis.data ?? []) : [];
+        const axisNameFontSize = getAxisTitleFontSize(currentOptions.theme.fontSize);
+        const xAxisName = currentOptions.xAxis.name?.trim() ?? '';
+        const yAxisName = currentOptions.yAxis.name?.trim() ?? '';
+        const facetYLabelSpans: HTMLSpanElement[] = [];
+        for (let i = 0; i < facetCells.length; i++) {
+          const cell = facetCells[i]!;
+          const plotLeftCss = cell.gridArea.left;
+          const plotRightCss = canvasCssWidth - cell.gridArea.right;
+          const plotTopCss = cell.gridArea.top;
+          const plotBottomCss = canvasCssHeight - cell.gridArea.bottom;
+          const plotWidthCss = plotRightCss - plotLeftCss;
+          const plotHeightCss = plotBottomCss - plotTopCss;
+          const nCols = facetLayout!.nCols;
+          const nRows = facetLayout!.nRows;
+          const row = Math.floor(i / nCols);
+          const col = i % nCols;
+          const drawXAxis = row === nRows - 1;
+          const drawYAxis = col === 0;
+          if (drawXAxis) {
+            const facetXTickCount = isCategoryXAxis
+              ? (currentOptions.xAxis.data?.length ?? 5)
+              : resolveTickCount(currentOptions.xAxis.splitNumber, DEFAULT_TICK_COUNT);
+            const xTickValues =
+              isCategoryXAxis
+                ? (currentOptions.xAxis.data ?? []).map((_: string, idx: number) => idx)
+                : generateLinearTicks(cell.visibleXDomain.min, cell.visibleXDomain.max, facetXTickCount);
+            const xLabelY = plotBottomCss + xTickLengthCssPx + LABEL_PADDING_CSS_PX + currentOptions.theme.fontSize * 0.5;
+            const xTickRotation = currentOptions.xAxis.tickLabelRotation ?? 0;
+            for (let t = 0; t < xTickValues.length; t++) {
+              const v = xTickValues[t]!;
+              const xClip = cell.xScale.scale(v);
+              const xCss = plotLeftCss + ((xClip + 1) / 2) * plotWidthCss;
+              const label = isCategoryXAxis ? (xCategoryLabels[t] ?? String(v)) : formatTickValue(createTickFormatter(0), v);
+              if (label == null || label === '') continue;
+              const anchor: TextOverlayAnchor = xTickRotation !== 0 ? (xTickRotation < 0 ? 'end' : 'start') : 'middle';
+              const span = axisLabelOverlay!.addLabel(label, offsetX + xCss, offsetY + xLabelY, {
+                fontSize: currentOptions.theme.fontSize,
+                color: currentOptions.theme.textColor,
+                anchor,
+                rotation: xTickRotation,
+              });
+              styleAxisLabelSpan(span, false, currentOptions.theme);
+            }
+          }
+          if (drawYAxis) {
+            const yTickLengthCssPx = currentOptions.yAxis.tickLength ?? DEFAULT_TICK_LENGTH_CSS_PX;
+            const yLabelX = plotLeftCss - yTickLengthCssPx - LABEL_PADDING_CSS_PX;
+            const isCategoryYAxisFacet = currentOptions.yAxis.type === 'category';
+            const yFormatterFacet = !isCategoryYAxisFacet && yTickValues.length > 1
+              ? createTickFormatter((yTickValues[yTickValues.length - 1]! - yTickValues[0]!) / (yTickValues.length - 1))
+              : null;
+            for (let t = 0; t < yTickValues.length; t++) {
+              const v = yTickValues[t]!;
+              const yClip = cell.yScale.scale(v);
+              const yCss = plotBottomCss - ((yClip + 1) / 2) * plotHeightCss;
+              const label = isCategoryYAxisFacet
+                ? (yCategoryLabels[t] ?? String(v))
+                : yFormatterFacet != null
+                  ? formatTickValue(yFormatterFacet, v)
+                  : formatTickValue(createTickFormatter(0), v);
+              if (label == null || label === '') continue;
+              const span = axisLabelOverlay!.addLabel(label, offsetX + yLabelX, offsetY + yCss, {
+                fontSize: currentOptions.theme.fontSize,
+                color: currentOptions.theme.textColor,
+                anchor: 'end',
+                rotation: currentOptions.yAxis.tickLabelRotation ?? 0,
+              });
+              styleAxisLabelSpan(span, false, currentOptions.theme);
+              if (col === 0) facetYLabelSpans.push(span);
+            }
+          }
+        }
+        if (yAxisName.length > 0 && facetCells.length > 0) {
+          const plotTopTotal = gridArea.top;
+          const plotBottomTotal = canvasCssHeight - gridArea.bottom;
+          const yCenter = (plotTopTotal + plotBottomTotal) / 2;
+          const yTickLengthCssPx = currentOptions.yAxis.tickLength ?? DEFAULT_TICK_LENGTH_CSS_PX;
+          const maxYLabelWidth = facetYLabelSpans.length === 0 ? 0 : facetYLabelSpans.reduce((max, s) => Math.max(max, s.getBoundingClientRect().width), 0);
+          const firstCellLeft = facetCells[0]!.gridArea.left;
+          const yTitleX = firstCellLeft - yTickLengthCssPx - LABEL_PADDING_CSS_PX - maxYLabelWidth - LABEL_PADDING_CSS_PX - axisNameFontSize * 0.5;
+          const yTitleOffset = currentOptions.yAxis.titleOffset;
+          const yTitleDx = (yTitleOffset != null && yTitleOffset[0] != null) ? yTitleOffset[0] : 0;
+          const yTitleDy = (yTitleOffset != null && yTitleOffset[1] != null) ? yTitleOffset[1] : 0;
+          const span = axisLabelOverlay!.addLabel(yAxisName, offsetX + yTitleX + yTitleDx, offsetY + yCenter + yTitleDy, {
             fontSize: axisNameFontSize,
             color: currentOptions.theme.textColor,
             anchor: 'middle',
@@ -4296,6 +5682,84 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
           });
           styleAxisLabelSpan(span, true, currentOptions.theme);
         }
+        if (xAxisName.length > 0 && facetCells.length > 0) {
+          const plotLeftTotal = gridArea.left;
+          const plotRightTotal = canvasCssWidth - gridArea.right;
+          const xCenter = (plotLeftTotal + plotRightTotal) / 2;
+          const lastCell = facetCells[facetCells.length - 1]!;
+          const plotBottomCssLast = canvasCssHeight - lastCell.gridArea.bottom;
+          const xLabelYLast = plotBottomCssLast + xTickLengthCssPx + LABEL_PADDING_CSS_PX + currentOptions.theme.fontSize * 0.5;
+          const xTickLabelsBottom = xLabelYLast + currentOptions.theme.fontSize * 0.5;
+          const xTitleY = (xTickLabelsBottom + canvasCssHeight) / 2;
+          const xTitleOffset = currentOptions.xAxis.titleOffset;
+          const xTitleDx = (xTitleOffset != null && xTitleOffset[0] != null) ? xTitleOffset[0] : 0;
+          const xTitleDy = (xTitleOffset != null && xTitleOffset[1] != null) ? xTitleOffset[1] : 0;
+          const span = axisLabelOverlay!.addLabel(xAxisName, offsetX + xCenter + xTitleDx, offsetY + xTitleY + xTitleDy, {
+            fontSize: axisNameFontSize,
+            color: currentOptions.theme.textColor,
+            anchor: 'middle',
+          });
+          styleAxisLabelSpan(span, true, currentOptions.theme);
+        }
+      }
+    }
+
+    // Optional facet labels per panel (value of fx/fy column above each cell).
+    if (facetLabelOverlay) {
+      if (facetLayout && facetCells.length > 0 && overlayContainer) {
+      const canvas = gpuContext.canvas;
+      const canvasCssWidth = getCanvasCssWidth(canvas, gpuContext.devicePixelRatio ?? 1);
+      const canvasCssHeight = getCanvasCssHeight(canvas, gpuContext.devicePixelRatio ?? 1);
+      if (canvasCssWidth > 0 && canvasCssHeight > 0 && isHTMLCanvasElement(canvas)) {
+        const offsetX = canvas.offsetLeft;
+        const offsetY = canvas.offsetTop;
+        facetLabelOverlay.clear();
+        const facet = currentOptions.facet!;
+        const FACET_LABEL_PADDING_CSS_PX = 4;
+        const hasFx = Boolean(facet.fx?.trim());
+        const hasFy = Boolean(facet.fy?.trim());
+        for (let i = 0; i < facetCells.length; i++) {
+          const cell = facetCells[i]!;
+          const row = Math.floor(i / facetLayout.nCols);
+          const col = i % facetLayout.nCols;
+          const fxVal = facetLayout.uniqueFx[col];
+          const fyVal = facetLayout.uniqueFy[row];
+          const plotWidthCss = canvasCssWidth - cell.gridArea.left - cell.gridArea.right;
+          const plotHeightCss = canvasCssHeight - cell.gridArea.top - cell.gridArea.bottom;
+          const labelRotation = currentOptions.facet?.labelRotation;
+          const labelMaxChars = currentOptions.facet?.labelMaxChars;
+          const truncateFacetLabel = (s: string): string => {
+            if (labelMaxChars == null || labelMaxChars <= 0 || s.length <= labelMaxChars) return s;
+            if (labelMaxChars <= 1) return '\u2026';
+            return s.slice(0, labelMaxChars - 1) + '\u2026';
+          };
+          const labelOpts = {
+            fontSize: currentOptions.theme.fontSize,
+            color: currentOptions.theme.textColor,
+            ...(labelRotation != null ? { rotation: labelRotation } : {}),
+          };
+          if (hasFx && row === 0) {
+            const labelX = offsetX + cell.gridArea.left + plotWidthCss / 2;
+            // Position so the bottom of the label (with translateY(-50%)) sits above the plot
+            const fontSize = currentOptions.theme.fontSize;
+            const labelY = offsetY + cell.gridArea.top - FACET_LABEL_PADDING_CSS_PX - fontSize * 0.5;
+            facetLabelOverlay.addLabel(truncateFacetLabel(String(fxVal ?? '')), labelX, labelY, {
+              ...labelOpts,
+              anchor: 'middle',
+            });
+          }
+          if (hasFy && col === facetLayout.nCols - 1) {
+            const labelX = offsetX + canvasCssWidth - cell.gridArea.right + FACET_LABEL_PADDING_CSS_PX;
+            const labelY = offsetY + cell.gridArea.top + plotHeightCss / 2;
+            facetLabelOverlay.addLabel(truncateFacetLabel(String(fyVal ?? '')), labelX, labelY, {
+              ...labelOpts,
+              anchor: 'start',
+            });
+          }
+        }
+      } else {
+        facetLabelOverlay.clear();
+      }
       }
     }
 
@@ -4592,6 +6056,16 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
     }
     scatterRenderers.length = 0;
 
+    for (let i = 0; i < scatterDensityRenderers.length; i++) {
+      scatterDensityRenderers[i].dispose();
+    }
+    scatterDensityRenderers.length = 0;
+
+    for (let i = 0; i < heatmapRenderers.length; i++) {
+      heatmapRenderers[i].dispose();
+    }
+    heatmapRenderers.length = 0;
+
     for (let i = 0; i < pieRenderers.length; i++) {
       pieRenderers[i].dispose();
     }
@@ -4621,13 +6095,18 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
     overlayBlitBindGroup = null;
 
     dataStore.dispose();
+    scatterInstanceStore.dispose();
+    areaVertexStore.dispose();
+    barInstanceStore.dispose();
 
     // Dispose tooltip/legend before the text overlay (all touch container positioning).
     tooltip?.dispose();
     tooltip = null;
     legend?.dispose();
+    heatmapColorScaleBar?.dispose();
     axisLabelOverlay?.dispose();
     annotationOverlay?.dispose();
+    facetLabelOverlay?.dispose();
   };
 
   const getInteractionX: RenderCoordinator['getInteractionX'] = () => interactionX;

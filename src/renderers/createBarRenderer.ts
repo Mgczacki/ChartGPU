@@ -13,9 +13,12 @@ export interface BarRenderer {
     dataStore: DataStore,
     xScale: LinearScale,
     yScale: LinearScale,
-    gridArea: GridArea
-  ): void;
-  render(passEncoder: GPURenderPassEncoder): void;
+    gridArea: GridArea,
+    /** When provided (e.g. facet per-cell buffer), instance data is written here. */
+    externalBuffer?: GPUBuffer
+  ): number;
+  /** When buffer/count are provided (e.g. facet), use them; otherwise use last prepare() state. */
+  render(passEncoder: GPURenderPassEncoder, buffer?: GPUBuffer, count?: number): void;
   dispose(): void;
 }
 
@@ -278,19 +281,19 @@ export function createBarRenderer(device: GPUDevice, options?: BarRendererOption
     return computeBaselineForBarsFromData(seriesConfigs);
   };
 
-  const prepare: BarRenderer['prepare'] = (seriesConfigs, dataStore, xScale, yScale, gridArea) => {
+  const prepare: BarRenderer['prepare'] = (seriesConfigs, dataStore, xScale, yScale, gridArea, externalBuffer) => {
     assertNotDisposed();
     void dataStore;
 
     if (seriesConfigs.length === 0) {
       instanceCount = 0;
-      return;
+      return 0;
     }
 
     const plotSize = computePlotSizeCssPx(gridArea);
     if (!plotSize) {
       instanceCount = 0;
-      return;
+      return 0;
     }
 
     const plotClipRect = computePlotClipRect(gridArea);
@@ -322,6 +325,22 @@ export function createBarRenderer(device: GPUDevice, options?: BarRendererOption
     }
     clusterCount = Math.max(1, clusterCount);
 
+    // Effective cluster count: max bars at any single category. When each category has only one bar
+    // (e.g. colorBy expansion), use 1 so bars get full category width instead of 1/N.
+    const barsPerCategory = new Map<number, number>();
+    for (let s = 0; s < seriesConfigs.length; s++) {
+      for (let i = 0; i < seriesConfigs[s].data.length; i++) {
+        const x = getPointXY(seriesConfigs[s].data[i]).x;
+        const key = Number.isFinite(x) ? x : NaN;
+        barsPerCategory.set(key, (barsPerCategory.get(key) ?? 0) + 1);
+      }
+    }
+    let maxBarsAtAnyCategory = 0;
+    for (const n of barsPerCategory.values()) {
+      if (n > maxBarsAtAnyCategory) maxBarsAtAnyCategory = n;
+    }
+    const effectiveClusterCount = Math.max(1, maxBarsAtAnyCategory);
+
     const categoryStep = computeBarCategoryStep(seriesConfigs);
     const layout = computeSharedBarLayout(seriesConfigs);
     const barGap = clamp01(layout.barGap ?? DEFAULT_BAR_GAP);
@@ -335,7 +354,7 @@ export function createBarRenderer(device: GPUDevice, options?: BarRendererOption
     const categoryWidthClip = computeCategoryWidthClip(xScale, categoryStep, plotClipRect, fallbackCategoryCount);
     const categoryInnerWidthClip = Math.max(0, categoryWidthClip * (1 - barCategoryGap));
 
-    const denom = clusterCount + Math.max(0, clusterCount - 1) * barGap;
+    const denom = effectiveClusterCount + Math.max(0, effectiveClusterCount - 1) * barGap;
     const maxBarWidthClip = denom > 0 ? categoryInnerWidthClip / denom : 0;
 
     let barWidthClip = 0;
@@ -349,12 +368,12 @@ export function createBarRenderer(device: GPUDevice, options?: BarRendererOption
     }
 
     if (!(barWidthClip > 0)) {
-      // Auto-width: max per-bar width that still avoids overlap (given clusterCount and barGap).
+      // Auto-width: max per-bar width that still avoids overlap (given effectiveClusterCount and barGap).
       barWidthClip = maxBarWidthClip;
     }
 
     const gapClip = barWidthClip * barGap;
-    const clusterWidthClip = clusterCount * barWidthClip + Math.max(0, clusterCount - 1) * gapClip;
+    const clusterWidthClip = effectiveClusterCount * barWidthClip + Math.max(0, effectiveClusterCount - 1) * gapClip;
 
     let baselineDomain = computeBaselineForBarsFromAxis(seriesConfigs, yScale, plotClipRect);
     let baselineClip = yScale.scale(baselineDomain);
@@ -369,7 +388,7 @@ export function createBarRenderer(device: GPUDevice, options?: BarRendererOption
       }
       if (!Number.isFinite(baselineClip)) {
         instanceCount = 0;
-        return;
+        return 0;
       }
     }
 
@@ -390,12 +409,15 @@ export function createBarRenderer(device: GPUDevice, options?: BarRendererOption
       const stackId = normalizeStackId(series.stack);
       const clusterIndex = clusterIndexBySeries[seriesIndex] ?? 0;
 
+      const effectiveClusterIndex =
+        effectiveClusterCount <= 1 ? 0 : Math.min(clusterIndex, effectiveClusterCount - 1);
+
       for (let i = 0; i < data.length; i++) {
         const { x, y } = getPointXY(data[i]);
         const xClipCenter = xScale.scale(x);
         if (!Number.isFinite(xClipCenter) || !Number.isFinite(y)) continue;
 
-        const left = xClipCenter - clusterWidthClip / 2 + clusterIndex * (barWidthClip + gapClip);
+        const left = xClipCenter - clusterWidthClip / 2 + effectiveClusterIndex * (barWidthClip + gapClip);
 
         let baseClip = baselineClip;
         let height = 0;
@@ -465,6 +487,13 @@ export function createBarRenderer(device: GPUDevice, options?: BarRendererOption
     instanceCount = outFloats / INSTANCE_STRIDE_FLOATS;
     const requiredBytes = Math.max(4, instanceCount * INSTANCE_STRIDE_BYTES);
 
+    if (externalBuffer) {
+      if (instanceCount > 0 && externalBuffer.size >= requiredBytes) {
+        device.queue.writeBuffer(externalBuffer, 0, cpuInstanceStagingBuffer, 0, instanceCount * INSTANCE_STRIDE_BYTES);
+      }
+      return instanceCount;
+    }
+
     if (!instanceBuffer || instanceBuffer.size < requiredBytes) {
       const grownBytes = Math.max(Math.max(4, nextPow2(requiredBytes)), instanceBuffer ? instanceBuffer.size : 0);
       if (instanceBuffer) {
@@ -484,16 +513,19 @@ export function createBarRenderer(device: GPUDevice, options?: BarRendererOption
     if (instanceCount > 0) {
       device.queue.writeBuffer(instanceBuffer, 0, cpuInstanceStagingBuffer, 0, instanceCount * INSTANCE_STRIDE_BYTES);
     }
+    return instanceCount;
   };
 
-  const render: BarRenderer['render'] = (passEncoder) => {
+  const render: BarRenderer['render'] = (passEncoder, buffer, count) => {
     assertNotDisposed();
-    if (!instanceBuffer || instanceCount === 0) return;
+    const drawBuffer = buffer ?? instanceBuffer;
+    const drawCount = count ?? instanceCount;
+    if (!drawBuffer || drawCount === 0) return;
 
     passEncoder.setPipeline(pipeline);
     passEncoder.setBindGroup(0, bindGroup);
-    passEncoder.setVertexBuffer(0, instanceBuffer);
-    passEncoder.draw(6, instanceCount);
+    passEncoder.setVertexBuffer(0, drawBuffer);
+    passEncoder.draw(6, drawCount);
   };
 
   const dispose: BarRenderer['dispose'] = () => {
