@@ -11,7 +11,8 @@ export interface LineRenderer {
     dataBuffer: GPUBuffer,
     xScale: LinearScale,
     yScale: LinearScale,
-    xOffset?: number
+    xOffset?: number,
+    yDomain?: { min: number; max: number }
   ): void;
   render(passEncoder: GPURenderPassEncoder): void;
   dispose(): void;
@@ -173,7 +174,7 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
     if (disposed) throw new Error('LineRenderer is disposed.');
   };
 
-  const prepare: LineRenderer['prepare'] = (seriesConfig, dataBuffer, xScale, yScale, xOffset = 0) => {
+  const prepare: LineRenderer['prepare'] = (seriesConfig, dataBuffer, xScale, yScale, xOffset = 0, yDomain) => {
     assertNotDisposed();
 
     currentVertexBuffer = dataBuffer;
@@ -181,7 +182,19 @@ export function createLineRenderer(device: GPUDevice, options?: LineRendererOpti
 
     const { xMin, xMax, yMin, yMax } = computeDataBounds(seriesConfig.data);
     const { a: ax, b: bx } = computeClipAffineFromScale(xScale, xMin, xMax);
-    const { a: ay, b: by } = computeClipAffineFromScale(yScale, yMin, yMax);
+    // When yDomain is provided (e.g. facets with shared Y), map [min,max] to [-1,1] directly so
+    // positions match the shared axis; do not rely on yScale which may not match.
+    let ay: number;
+    let by: number;
+    if (yDomain != null && Number.isFinite(yDomain.min) && Number.isFinite(yDomain.max) && yDomain.min !== yDomain.max) {
+      const span = yDomain.max - yDomain.min;
+      ay = 2 / span;
+      by = -1 - ay * yDomain.min;
+    } else {
+      const { a: ayData, b: byData } = computeClipAffineFromScale(yScale, yMin, yMax);
+      ay = ayData;
+      by = byData;
+    }
 
     // When the vertex buffer packs x as (x - xOffset) (to preserve Float32 precision for large
     // domains like epoch-ms), fold the offset back into the affine's intercept in f64 on CPU:

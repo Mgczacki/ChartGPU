@@ -13,7 +13,9 @@ import type {
   DataPoint,
   DataPointTuple,
   DataZoomConfig,
+  FacetConfig,
   GridConfig,
+  LegendPosition,
   LineStyleConfig,
   OHLCDataPoint,
   OHLCDataPointTuple,
@@ -23,7 +25,10 @@ import type {
   PieDataItem,
   PieSeriesConfig,
   ScatterSeriesConfig,
+  HeatmapSeriesConfig,
+  HistogramSeriesConfig,
   ScatterSymbol,
+  SeriesConfig,
   SeriesSampling,
 } from './types';
 import {
@@ -38,6 +43,7 @@ import { getTheme } from '../themes';
 import type { ThemeConfig } from '../themes/types';
 import { sampleSeriesDataPoints } from '../data/sampleSeries';
 import { ohlcSample } from '../data/ohlcSample';
+import { computeHistogramBins } from '../utils/histogramBins';
 
 export type ResolvedGridConfig = Readonly<Required<GridConfig>>;
 export type ResolvedLineStyleConfig = Readonly<Required<Omit<LineStyleConfig, 'color'>> & { readonly color: string }>;
@@ -45,11 +51,32 @@ export type ResolvedAreaStyleConfig = Readonly<Required<Omit<AreaStyleConfig, 'c
 
 export type RawBounds = Readonly<{ xMin: number; xMax: number; yMin: number; yMax: number }>;
 
+/** Resolved marker config for line/area: show markers at each point with given size (CSS px). */
+export type ResolvedMarkerConfig = Readonly<{ show: boolean; symbolSize: number }>;
+
+const DEFAULT_MARKER_SYMBOL_SIZE = 4;
+
+function normalizeMarker(
+  marker: boolean | { show?: boolean; symbolSize?: number } | undefined
+): ResolvedMarkerConfig | undefined {
+  if (marker === undefined || marker === false) return undefined;
+  if (marker === true) return { show: true, symbolSize: DEFAULT_MARKER_SYMBOL_SIZE };
+  const show = (marker as { show?: boolean }).show !== false;
+  if (!show) return undefined;
+  const symbolSizeRaw = (marker as { symbolSize?: number }).symbolSize;
+  const symbolSize =
+    typeof symbolSizeRaw === 'number' && Number.isFinite(symbolSizeRaw) && symbolSizeRaw > 0
+      ? symbolSizeRaw
+      : DEFAULT_MARKER_SYMBOL_SIZE;
+  return { show: true, symbolSize };
+}
+
 export type ResolvedLineSeriesConfig = Readonly<
-  Omit<LineSeriesConfig, 'color' | 'lineStyle' | 'areaStyle' | 'sampling' | 'samplingThreshold' | 'data'> & {
+  Omit<LineSeriesConfig, 'color' | 'lineStyle' | 'areaStyle' | 'marker' | 'sampling' | 'samplingThreshold' | 'data'> & {
     readonly color: string;
     readonly lineStyle: ResolvedLineStyleConfig;
     readonly areaStyle?: ResolvedAreaStyleConfig;
+    readonly marker?: ResolvedMarkerConfig;
     readonly sampling: SeriesSampling;
     readonly samplingThreshold: number;
     /**
@@ -69,9 +96,10 @@ export type ResolvedLineSeriesConfig = Readonly<
 >;
 
 export type ResolvedAreaSeriesConfig = Readonly<
-  Omit<AreaSeriesConfig, 'color' | 'areaStyle' | 'sampling' | 'samplingThreshold' | 'data'> & {
+  Omit<AreaSeriesConfig, 'color' | 'areaStyle' | 'marker' | 'sampling' | 'samplingThreshold' | 'data'> & {
     readonly color: string;
     readonly areaStyle: ResolvedAreaStyleConfig;
+    readonly marker?: ResolvedMarkerConfig;
     readonly sampling: SeriesSampling;
     readonly samplingThreshold: number;
     /** Original (unsampled) series data (see `ResolvedLineSeriesConfig.rawData`). */
@@ -156,16 +184,47 @@ export type ResolvedCandlestickSeriesConfig = Readonly<
   }
 >;
 
+export type ResolvedHeatmapSeriesConfig = Readonly<
+  Omit<HeatmapSeriesConfig, 'color' | 'sampling' | 'samplingThreshold'> & {
+    readonly color: string;
+    readonly sampling: 'none';
+    readonly samplingThreshold: 0;
+    readonly rawData?: Readonly<HeatmapSeriesConfig['data']>;
+    readonly rawBounds?: RawBounds;
+  }
+>;
+
+export type ResolvedHistogramSeriesConfig = Readonly<
+  Omit<HistogramSeriesConfig, 'color' | 'data'> & {
+    readonly color: string;
+    readonly rawData: number[];
+    /** When input was DataPoint[], kept for facet filtering. */
+    readonly rawDataPoints?: ReadonlyArray<DataPoint>;
+    readonly binWidth?: number;
+    readonly binEdges: number[];
+    readonly counts: number[];
+    /** Bar-like data (bin center, count) for compatibility with code that reads series.data. */
+    readonly data: ReadonlyArray<DataPoint>;
+    readonly rawBounds?: RawBounds;
+    readonly sampling: SeriesSampling;
+    readonly samplingThreshold: number;
+  }
+>;
+
 export type ResolvedSeriesConfig =
   | ResolvedLineSeriesConfig
   | ResolvedAreaSeriesConfig
   | ResolvedBarSeriesConfig
   | ResolvedScatterSeriesConfig
+  | ResolvedHeatmapSeriesConfig
   | ResolvedPieSeriesConfig
-  | ResolvedCandlestickSeriesConfig;
+  | ResolvedCandlestickSeriesConfig
+  | ResolvedHistogramSeriesConfig;
+
+const LEGEND_POSITIONS: ReadonlyArray<LegendPosition> = ['top', 'bottom', 'left', 'right'];
 
 export interface ResolvedChartGPUOptions
-  extends Omit<ChartGPUOptions, 'grid' | 'xAxis' | 'yAxis' | 'theme' | 'palette' | 'series'> {
+  extends Omit<ChartGPUOptions, 'grid' | 'xAxis' | 'yAxis' | 'theme' | 'palette' | 'series' | 'legend'> {
   readonly grid: ResolvedGridConfig;
   readonly xAxis: AxisConfig;
   readonly yAxis: AxisConfig;
@@ -174,7 +233,42 @@ export interface ResolvedChartGPUOptions
   readonly palette: ReadonlyArray<string>;
   readonly series: ReadonlyArray<ResolvedSeriesConfig>;
   readonly annotations?: ReadonlyArray<AnnotationConfig>;
+  readonly legend: { position: LegendPosition };
 }
+
+const sanitizeFacet = (input: unknown): FacetConfig | undefined => {
+  if (input == null || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const record = input as Record<string, unknown>;
+  const fx = typeof record.fx === 'string' ? record.fx.trim() : undefined;
+  const fy = typeof record.fy === 'string' ? record.fy.trim() : undefined;
+  if (!fx && !fy) return undefined;
+  const gapRaw = record.gap;
+  const gap =
+    typeof gapRaw === 'number' && Number.isFinite(gapRaw) && gapRaw >= 0 ? gapRaw : undefined;
+  const labelRotationRaw = record.labelRotation;
+  const labelRotation =
+    typeof labelRotationRaw === 'number' && Number.isFinite(labelRotationRaw)
+      ? labelRotationRaw
+      : undefined;
+  const labelMaxCharsRaw = record.labelMaxChars;
+  const labelMaxChars =
+    typeof labelMaxCharsRaw === 'number' && Number.isFinite(labelMaxCharsRaw) && labelMaxCharsRaw > 0
+      ? Math.floor(labelMaxCharsRaw)
+      : undefined;
+  return { fx: fx || undefined, fy: fy || undefined, gap, labelRotation, labelMaxChars };
+};
+
+const sanitizeLegend = (input: unknown): { position: LegendPosition } => {
+  const defaultLegend = { position: 'right' as LegendPosition };
+  if (input == null || typeof input !== 'object' || Array.isArray(input)) return defaultLegend;
+  const record = input as Record<string, unknown>;
+  const pos = record.position;
+  const position =
+    typeof pos === 'string' && (LEGEND_POSITIONS as ReadonlyArray<string>).includes(pos)
+      ? (pos as LegendPosition)
+      : 'right';
+  return { position };
+};
 
 const sanitizeDataZoom = (input: unknown): ReadonlyArray<DataZoomConfig> | undefined => {
   if (!Array.isArray(input)) return undefined;
@@ -709,6 +803,90 @@ const warnCandlestickNotImplemented = (): void => {
   }
 };
 
+function getCategoryFromPoint(point: DataPoint, colorBy: string): string | undefined {
+  if (Array.isArray(point)) return undefined;
+  const val = (point as Record<string, unknown>)[colorBy];
+  return val != null ? String(val) : undefined;
+}
+
+function normalizePointForColorBy(
+  point: DataPoint,
+  _colorBy: string,
+  facet?: FacetConfig
+): DataPoint {
+  if (Array.isArray(point)) return point;
+  const obj = point as Record<string, unknown>;
+  const out: Record<string, unknown> = { x: obj.x, y: obj.y };
+  if (obj.size !== undefined) out.size = obj.size;
+  if (obj.fx !== undefined) out.fx = obj.fx;
+  if (obj.fy !== undefined) out.fy = obj.fy;
+  if (facet?.fx && obj[facet.fx] !== undefined) out[facet.fx] = obj[facet.fx];
+  if (facet?.fy && obj[facet.fy] !== undefined) out[facet.fy] = obj[facet.fy];
+  return out as DataPoint;
+}
+
+/**
+ * When colorBy is set, expand cartesian series (line, area, bar, scatter) whose data
+ * points are objects containing the colorBy property into one series per unique
+ * category value. Preserves facet keys (fx, fy) on points. Order of categories is
+ * first appearance in data.
+ */
+function expandSeriesByColorBy(
+  series: ReadonlyArray<SeriesConfig>,
+  colorBy: string,
+  facet?: FacetConfig
+): Array<SeriesConfig> {
+  const result: Array<SeriesConfig> = [];
+  for (const s of series) {
+    const type = (s as { readonly type?: string }).type;
+    if (
+      type !== 'line' &&
+      type !== 'area' &&
+      type !== 'bar' &&
+      type !== 'scatter'
+    ) {
+      result.push(s);
+      continue;
+    }
+    const data = s.data;
+    if (!data || data.length === 0) {
+      result.push(s);
+      continue;
+    }
+    const first = data[0];
+    const hasColorBy =
+      first != null &&
+      !Array.isArray(first) &&
+      (first as Record<string, unknown>)[colorBy] !== undefined;
+    if (!hasColorBy) {
+      result.push(s);
+      continue;
+    }
+    const order: string[] = [];
+    const map = new Map<string, DataPoint[]>();
+    const dataPoints = data as ReadonlyArray<DataPoint>;
+    for (const pt of dataPoints) {
+      const cat = getCategoryFromPoint(pt, colorBy);
+      if (cat == null) continue;
+      if (!map.has(cat)) {
+        order.push(cat);
+        map.set(cat, []);
+      }
+      map.get(cat)!.push(normalizePointForColorBy(pt, colorBy, facet));
+    }
+    for (const cat of order) {
+      const groupData = map.get(cat)!;
+      result.push({
+        ...s,
+        name: cat,
+        data: groupData,
+        color: undefined,
+      } as SeriesConfig);
+    }
+  }
+  return result;
+}
+
 export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChartGPUOptions {
   const baseTheme = resolveTheme(userOptions.theme);
 
@@ -776,7 +954,18 @@ export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChart
       }
     : { ...defaultOptions.yAxis };
 
-  const series: ReadonlyArray<ResolvedSeriesConfig> = (userOptions.series ?? []).map((s, i) => {
+  const colorByRaw =
+    typeof (userOptions as { readonly colorBy?: unknown }).colorBy === 'string'
+      ? (userOptions as { readonly colorBy: string }).colorBy.trim()
+      : '';
+  const colorBy = colorByRaw.length > 0 ? colorByRaw : undefined;
+  const facetForExpand = sanitizeFacet((userOptions as ChartGPUOptions).facet);
+  const seriesToResolve =
+    colorBy !== undefined
+      ? expandSeriesByColorBy(userOptions.series ?? [], colorBy, facetForExpand ?? undefined)
+      : (userOptions.series ?? []);
+
+  const series: ReadonlyArray<ResolvedSeriesConfig> = seriesToResolve.map((s, i) => {
     const explicitColor = normalizeOptionalColor(s.color);
     const inheritedColor = theme.colorPalette[i % theme.colorPalette.length];
     const color = explicitColor ?? inheritedColor;
@@ -797,12 +986,15 @@ export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChart
         };
 
         const rawBounds = computeRawBoundsFromData(s.data);
+        const markerResolved = normalizeMarker((s as { marker?: boolean | { show?: boolean; symbolSize?: number } }).marker);
+        const { marker: _areaMarker, ...sRest } = s;
         return {
-          ...s,
+          ...sRest,
           rawData: s.data,
           data: sampleSeriesDataPoints(s.data, sampling, samplingThreshold),
           color: effectiveColor,
           areaStyle,
+          ...(markerResolved != null ? { marker: markerResolved } : {}),
           sampling,
           samplingThreshold,
           rawBounds,
@@ -819,10 +1011,11 @@ export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChart
           color: effectiveStrokeColor,
         };
 
-        // Avoid leaking the unresolved (user) areaStyle shape via object spread.
-        const { areaStyle: _userAreaStyle, ...rest } = s;
+        // Avoid leaking the unresolved (user) areaStyle and marker shape via object spread.
+        const { areaStyle: _userAreaStyle, marker: _lineMarker, ...rest } = s;
         const rawBounds = computeRawBoundsFromData(s.data);
         const sampledData = sampleSeriesDataPoints(s.data, sampling, samplingThreshold);
+        const lineMarkerResolved = normalizeMarker((s as { marker?: boolean | { show?: boolean; symbolSize?: number } }).marker);
 
         return {
           ...rest,
@@ -839,6 +1032,7 @@ export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChart
                 },
               }
             : {}),
+          ...(lineMarkerResolved != null ? { marker: lineMarkerResolved } : {}),
           sampling,
           samplingThreshold,
           rawBounds,
@@ -882,6 +1076,67 @@ export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChart
           samplingThreshold,
           rawBounds,
         };
+      }
+      case 'heatmap': {
+        return {
+          ...s,
+          color,
+          sampling: 'none',
+          samplingThreshold: 0,
+        } as ResolvedHeatmapSeriesConfig;
+      }
+      case 'histogram': {
+        const raw = s.data;
+        let rawValues: number[];
+        let rawDataPoints: ReadonlyArray<DataPoint> | undefined;
+        if (raw.length > 0 && typeof (raw as number[])[0] === 'number') {
+          rawValues = (raw as number[]).filter((v) => Number.isFinite(v));
+        } else {
+          const points = raw as ReadonlyArray<DataPoint>;
+          rawDataPoints = points;
+          rawValues = points.map((p) => {
+            const pt = p as { x?: number; y?: number };
+            const y = Array.isArray(p) ? (p as DataPointTuple)[1] : pt.y;
+            const x = Array.isArray(p) ? (p as DataPointTuple)[0] : pt.x;
+            return Number.isFinite(y) ? y! : Number.isFinite(x) ? x! : NaN;
+          }).filter((v) => Number.isFinite(v));
+        }
+        const binWidthRaw = (s as HistogramSeriesConfig).binWidth;
+        const binWidth =
+          typeof binWidthRaw === 'number' && Number.isFinite(binWidthRaw) && binWidthRaw > 0
+            ? binWidthRaw
+            : undefined;
+        const { binEdges, counts } = computeHistogramBins(rawValues, binWidth);
+        const data: DataPoint[] = [];
+        for (let k = 0; k < counts.length; k++) {
+          const left = binEdges[k]!;
+          const right = binEdges[k + 1]!;
+          data.push({ x: (left + right) / 2, y: counts[k]! });
+        }
+        const rawBounds: RawBounds | undefined =
+          binEdges.length >= 2
+            ? {
+                xMin: binEdges[0]!,
+                xMax: binEdges[binEdges.length - 1]!,
+                yMin: 0,
+                yMax: Math.max(0, ...counts),
+              }
+            : undefined;
+        return {
+          type: 'histogram',
+          name: s.name,
+          color,
+          showInLegend: s.showInLegend,
+          rawData: rawValues,
+          rawDataPoints,
+          binWidth,
+          binEdges,
+          counts,
+          data,
+          rawBounds,
+          sampling: 'none',
+          samplingThreshold: 0,
+        } as ResolvedHistogramSeriesConfig;
       }
       case 'pie': {
         // Pie series intentionally do NOT support sampling at runtime.
@@ -962,6 +1217,8 @@ export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChart
     theme,
     palette: theme.colorPalette,
     series,
+    facet: sanitizeFacet((userOptions as ChartGPUOptions).facet),
+    legend: sanitizeLegend((userOptions as ChartGPUOptions).legend),
   };
 }
 

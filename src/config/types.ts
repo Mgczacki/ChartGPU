@@ -5,7 +5,7 @@
 import type { ThemeConfig } from '../themes/types';
 
 export type AxisType = 'value' | 'time' | 'category';
-export type SeriesType = 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'candlestick';
+export type SeriesType = 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'candlestick' | 'histogram';
 
 /**
  * A single data point for a series.
@@ -67,7 +67,23 @@ export interface AxisConfig {
   readonly max?: number;
   /** Tick length in CSS pixels (default: 6). */
   readonly tickLength?: number;
+  /**
+   * Approximate number of axis segments/ticks. Applies to `value` and `time` axes only.
+   * For `xAxis.type === 'time'`, when set, disables the adaptive tick algorithm and fixes the count.
+   * For `xAxis.type === 'category'` this is ignored. Values are clamped to [1, 20].
+   */
+  readonly splitNumber?: number;
+  /**
+   * Rotation of tick labels in degrees (CSS rotate).
+   * Useful for x-axis to avoid overlap (e.g. 45 or -45). Default: 0.
+   */
+  readonly tickLabelRotation?: number;
   readonly name?: string;
+  /**
+   * Offset for the axis title (name) only, in CSS pixels [dx, dy].
+   * Does not affect tick labels. Useful e.g. to shift the x-axis title down when using rotated tick labels.
+   */
+  readonly titleOffset?: readonly [dx: number, dy: number];
   /**
    * Axis domain auto-bounds mode (primarily used for y-axis):
    * - `'global'`: derive from full dataset (pre-zoom behavior)
@@ -106,6 +122,10 @@ export interface SeriesConfigBase {
   readonly data: ReadonlyArray<DataPoint>;
   readonly color?: string;
   /**
+   * When false, this series is not shown in the legend. Defaults to true when omitted.
+   */
+  readonly showInLegend?: boolean;
+  /**
    * Optional per-series sampling strategy for large datasets.
    *
    * When `sampling !== 'none'` and `data.length > samplingThreshold`, ChartGPU may downsample
@@ -129,6 +149,11 @@ export interface LineSeriesConfig extends SeriesConfigBase {
    * When provided, renderers may choose to render a filled area under the line.
    */
   readonly areaStyle?: AreaStyleConfig;
+  /**
+   * When true or an object with show: true, draw markers at each data point using the series color.
+   * Object form allows symbolSize in CSS px (default 4). When false or omitted, no markers are drawn.
+   */
+  readonly marker?: boolean | { show?: boolean; symbolSize?: number };
 }
 
 export interface AreaSeriesConfig extends SeriesConfigBase {
@@ -139,6 +164,11 @@ export interface AreaSeriesConfig extends SeriesConfigBase {
    */
   readonly baseline?: number;
   readonly areaStyle?: AreaStyleConfig;
+  /**
+   * When true or an object with show: true, draw markers at each data point using the series color.
+   * Object form allows symbolSize in CSS px (default 4). When false or omitted, no markers are drawn.
+   */
+  readonly marker?: boolean | { show?: boolean; symbolSize?: number };
 }
 
 export interface BarItemStyleConfig {
@@ -201,6 +231,29 @@ export interface ScatterSeriesConfig extends SeriesConfigBase {
   readonly symbol?: ScatterSymbol;
 }
 
+export type HeatmapDataPoint = Readonly<{ x: number; y: number; value: number }>;
+
+export interface HeatmapSeriesConfig extends Omit<SeriesConfigBase, 'data'> {
+  readonly type: 'heatmap';
+  /**
+   * Heatmap data: each point has (x, y, value).
+   * x and y are category indices (0, 1, 2, ...) or numeric coords.
+   * value is the aggregated metric (sum, mean, etc.) used for color mapping.
+   */
+  readonly data: ReadonlyArray<HeatmapDataPoint>;
+  /**
+   * Colormap for mapping value to color.
+   * - Named: 'viridis', 'plasma', 'inferno'
+   * - Custom: array of CSS colors [lowColor, ..., highColor]
+   */
+  readonly colormap?: 'viridis' | 'plasma' | 'inferno' | readonly string[];
+  /**
+   * Min/max value range for color mapping. If omitted, uses data min/max.
+   */
+  readonly valueMin?: number;
+  readonly valueMax?: number;
+}
+
 export type PieDataItem = Readonly<{ value: number; name: string; color?: string }>;
 
 export interface PieItemStyleConfig {
@@ -254,13 +307,29 @@ export interface CandlestickSeriesConfig extends Omit<SeriesConfigBase, 'data'> 
   readonly sampling?: 'none' | 'ohlc';
 }
 
+/**
+ * Histogram series: bins 1D values and renders as bars (count per bin).
+ * data: array of numbers to bin, or DataPoint[] (uses y, or x if y missing).
+ * binWidth (optional): fixed bin width in data units; if omitted, Freedman-Diaconis is used.
+ */
+export interface HistogramSeriesConfig extends Omit<SeriesConfigBase, 'data'> {
+  readonly type: 'histogram';
+  readonly data: ReadonlyArray<number> | ReadonlyArray<DataPoint>;
+  /**
+   * Bin width in data units. If omitted, bin width is computed via Freedman-Diaconis.
+   */
+  readonly binWidth?: number;
+}
+
 export type SeriesConfig =
   | LineSeriesConfig
   | AreaSeriesConfig
   | BarSeriesConfig
   | ScatterSeriesConfig
+  | HeatmapSeriesConfig
   | PieSeriesConfig
-  | CandlestickSeriesConfig;
+  | CandlestickSeriesConfig
+  | HistogramSeriesConfig;
 
 /**
  * Parameters passed to tooltip formatter function.
@@ -272,9 +341,13 @@ export interface TooltipParams {
   /**
    * Value tuple for the data point.
    * - Cartesian series (line, area, bar, scatter): [x, y]
+   * - Heatmap series: [x, y, cellValue] (cellValue is the value used to color the cell)
    * - Candlestick series: [timestamp, open, close, low, high]
    */
-  readonly value: readonly [number, number] | readonly [number, number, number, number, number];
+  readonly value:
+    | readonly [number, number]
+    | readonly [number, number, number]
+    | readonly [number, number, number, number, number];
   readonly color: string;
 }
 
@@ -522,6 +595,46 @@ export interface AnnotationConfigBase {
 export type AnnotationConfig = (AnnotationLineX | AnnotationLineY | AnnotationPoint | AnnotationText) &
   AnnotationConfigBase;
 
+/**
+ * Facet configuration: split the chart into panels by unique values of a column.
+ * - fx: column name for horizontal faceting (one panel per value, in columns). All panels share the same y-axis.
+ * - fy: column name for vertical faceting (one panel per value, in rows). All panels share the same x-axis.
+ * When using facets, each point in series[].data must be an object (not a tuple) that includes the facet
+ * property, e.g. point[options.facet.fx] or point[options.facet.fy]. Example: { x: 1, y: 10, region: 'Norte' } with facet: { fx: 'region' }.
+ */
+export interface FacetConfig {
+  readonly fx?: string;
+  readonly fy?: string;
+  /**
+   * Gap between facet cells in CSS pixels (horizontal and vertical).
+   * Default: 8.
+   */
+  readonly gap?: number;
+  /**
+   * Rotation of facet labels (fx and fy) in degrees (CSS rotate).
+   * Default: 0.
+   */
+  readonly labelRotation?: number;
+  /**
+   * Max characters for facet labels (fx/fy values). Longer labels are truncated with ellipsis.
+   * Omit or 0 for no truncation.
+   */
+  readonly labelMaxChars?: number;
+}
+
+export type LegendPosition = 'top' | 'bottom' | 'left' | 'right';
+
+/**
+ * Legend configuration. When position is set, the grid reserves margin so the legend sits outside the plot area.
+ */
+export interface LegendConfig {
+  /**
+   * Position of the legend. Default: 'right'.
+   * With 'left' or 'right' the legend is in a vertical band; with 'top' or 'bottom' it is in a horizontal band.
+   */
+  readonly position?: LegendPosition;
+}
+
 export interface ChartGPUOptions {
   readonly grid?: GridConfig;
   readonly xAxis?: AxisConfig;
@@ -529,6 +642,14 @@ export interface ChartGPUOptions {
   readonly dataZoom?: ReadonlyArray<DataZoomConfig>;
   readonly series?: ReadonlyArray<SeriesConfig>;
   readonly annotations?: ReadonlyArray<AnnotationConfig>;
+  /**
+   * Facet by column: creates n panels (one per unique value). fx = horizontal panels, shared y-axis; fy = vertical panels, shared x-axis.
+   */
+  readonly facet?: FacetConfig;
+  /**
+   * Legend position. When set, margin is reserved so the legend does not overlap the plot.
+   */
+  readonly legend?: LegendConfig;
   /**
    * When true, the chart may automatically keep the view anchored to the latest data while streaming.
    * Default: false.
@@ -552,5 +673,13 @@ export interface ChartGPUOptions {
    * - `true` enables animation with defaults.
    */
   readonly animation?: AnimationConfig | boolean;
+  /**
+   * When set, cartesian series (line, area, bar, scatter) whose data points are objects
+   * containing this property are expanded into one series per unique category value, each
+   * assigned a color from the palette. Points must be object form with `x`, `y`, and the
+   * key given by `colorBy` (e.g. `{ x: 1, y: 2, region: 'Norte' }` with `colorBy: 'region'`).
+   * Does not apply to heatmap, pie, candlestick, or histogram.
+   */
+  readonly colorBy?: string;
 }
 
