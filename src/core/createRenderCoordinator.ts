@@ -1244,6 +1244,55 @@ const generateLinearTicks = (domainMin: number, domainMax: number, tickCount: nu
   return ticks;
 };
 
+/**
+ * Generates "nice" axis ticks (round numbers: 1, 2, or 5 × powers of 10).
+ * When the domain crosses zero, 0 is included as a tick so it aligns with the zero axis.
+ * Based on D3's d3.ticks / d3.tickStep behavior.
+ */
+const generateNiceTicks = (domainMin: number, domainMax: number, tickCount: number): number[] => {
+  const count = Math.max(1, Math.floor(tickCount));
+  const span = domainMax - domainMin;
+  if (!Number.isFinite(span) || span <= 0) {
+    return [domainMin];
+  }
+
+  const rawStep = span / Math.max(1, count - 1);
+  if (!Number.isFinite(rawStep) || rawStep <= 0) {
+    return generateLinearTicks(domainMin, domainMax, count);
+  }
+
+  const pow10 = Math.pow(10, Math.floor(Math.log10(rawStep)));
+  const normalized = rawStep / pow10;
+
+  // Pick nice step: 1, 2, or 5 × power of 10 (when normalized > 5, use next power)
+  let niceStep: number;
+  if (normalized <= 1) {
+    niceStep = pow10;
+  } else if (normalized <= 2) {
+    niceStep = 2 * pow10;
+  } else if (normalized <= 5) {
+    niceStep = 5 * pow10;
+  } else {
+    niceStep = 10 * pow10;
+  }
+
+  // First tick: largest multiple of step <= domainMin (for negative: floor gives correct alignment)
+  let start = Math.floor(domainMin / niceStep) * niceStep;
+  if (start > domainMin) {
+    start -= niceStep;
+  }
+
+  const ticks: number[] = [];
+  const epsilon = span * 1e-10;
+  for (let t = start; t <= domainMax + epsilon; t += niceStep) {
+    if (t >= domainMin - epsilon) {
+      ticks.push(t);
+    }
+  }
+
+  return ticks.length >= 1 ? ticks : [domainMin];
+};
+
 const resolveTickCount = (axisSplitNumber: number | undefined, fallback: number): number => {
   if (axisSplitNumber == null || !Number.isFinite(axisSplitNumber)) return fallback;
   return Math.max(1, Math.min(20, Math.floor(axisSplitNumber)));
@@ -1478,11 +1527,21 @@ const computeBaseYDomain = (
   }
 
   // Merge explicit bounds with computed bounds (partial override support)
-  const yMin = explicitMin ?? bounds.yMin;
+  let yMin = explicitMin ?? bounds.yMin;
   let yMax = explicitMax ?? bounds.yMax;
 
-  // When max is auto, add a little headroom above the top value so it does not sit on the plot edge
-  if (explicitMax === undefined) {
+  // includeZero: extend domain to include 0 when it would otherwise be excluded (only when min/max are auto)
+  let includeZeroExtendedMax = false;
+  if (options.yAxis.includeZero === true) {
+    if (explicitMax === undefined && yMax < 0) {
+      yMax = 0;
+      includeZeroExtendedMax = true;
+    }
+    if (explicitMin === undefined && yMin > 0) yMin = 0;
+  }
+
+  // When max is auto, add a little headroom above the top value (skip when includeZero set max to 0)
+  if (explicitMax === undefined && !includeZeroExtendedMax) {
     const span = yMax - yMin;
     if (Number.isFinite(span) && span > 0) {
       yMax = yMax + span * Y_DOMAIN_TOP_PADDING_RATIO;
@@ -3897,6 +3956,33 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
       }
     }
 
+    // Zero axis: when y-domain crosses zero, draw a horizontal line at y=0 (below series)
+    if (
+      hasCartesianSeries &&
+      currentOptions.yAxis.type !== 'category' &&
+      yBaseDomain.min < 0 &&
+      yBaseDomain.max > 0 &&
+      canvasCssWidthForAnnotations > 0 &&
+      canvasCssHeightForAnnotations > 0 &&
+      plotWidthCss > 0 &&
+      plotHeightCss > 0
+    ) {
+      const yClip = yScale.scale(0);
+      const yCss = clipYToCanvasCssPx(yClip, canvasCssHeightForAnnotations);
+      if (Number.isFinite(yCss)) {
+        const zeroLineRgba =
+          parseCssColorToRgba01(currentOptions.theme.axisLineColor) ??
+          ([1, 1, 1, 0.9] as const);
+        annotationLineBelow.unshift({
+          axis: 'horizontal',
+          positionCssPx: yCss,
+          lineWidth: 1,
+          lineDash: undefined,
+          rgba: [zeroLineRgba[0], zeroLineRgba[1], zeroLineRgba[2], Math.min(1, zeroLineRgba[3] * 1.1)] as const,
+        });
+      }
+    }
+
     // PERFORMANCE: Use array references directly instead of spreading (avoids allocation)
     const combinedReferenceLines: ReadonlyArray<ReferenceLineInstance> =
       annotationLineBelow.length + annotationLineAbove.length > 0 ? [...annotationLineBelow, ...annotationLineAbove] : [];
@@ -3948,11 +4034,12 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         xTickValues = computed.tickValues;
       }
     } else {
-      // Value axis: use splitNumber when provided, else DEFAULT_TICK_COUNT
+      // Value axis: use nice ticks and splitNumber when provided, else DEFAULT_TICK_COUNT
       const domainMin = finiteOrUndefined(currentOptions.xAxis.min) ?? xScale.invert(plotClipRect.left);
       const domainMax = finiteOrUndefined(currentOptions.xAxis.max) ?? xScale.invert(plotClipRect.right);
       xTickCount = resolveTickCount(xAxisSplitNumber, DEFAULT_TICK_COUNT);
-      xTickValues = generateLinearTicks(domainMin, domainMax, xTickCount);
+      xTickValues = generateNiceTicks(domainMin, domainMax, xTickCount);
+      xTickCount = xTickValues.length;
     }
 
     // Y-axis tick count, values, and category labels (for overlay and grid). Mirror x-axis category logic.
@@ -3968,7 +4055,8 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
       const yDomainMin = finiteOrUndefined(currentOptions.yAxis.min) ?? yScale.invert(plotClipRect.bottom);
       const yDomainMax = finiteOrUndefined(currentOptions.yAxis.max) ?? yScale.invert(plotClipRect.top);
       yTickCount = resolveTickCount(currentOptions.yAxis.splitNumber, DEFAULT_TICK_COUNT);
-      yTickValues = generateLinearTicks(yDomainMin, yDomainMax, yTickCount);
+      yTickValues = generateNiceTicks(yDomainMin, yDomainMax, yTickCount);
+      yTickCount = yTickValues.length;
     }
 
     const interactionScales = computeInteractionScalesGridCssPx(gridArea, {
@@ -4118,7 +4206,7 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
             const cellXTickValues =
               currentOptions.xAxis.type === 'category'
                 ? (currentOptions.xAxis.data ?? []).map((_: string, i: number) => i)
-                : generateLinearTicks(cellXDomain.min, cellXDomain.max, cellXTickCount);
+                : generateNiceTicks(cellXDomain.min, cellXDomain.max, cellXTickCount);
             if (cellXTickValues.length > 0) {
               cellGridOptions.verticalPositionsClip = cellXTickValues.map((v) => cellXScale.scale(v));
             }
@@ -4237,7 +4325,8 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         gridArea,
         currentOptions.theme.axisLineColor,
         currentOptions.theme.axisTickColor,
-        xTickCount
+        xTickCount,
+        xTickValues.length > 0 ? xTickValues : undefined
       );
       yAxisRenderer.prepare(
         currentOptions.yAxis,
@@ -4246,7 +4335,8 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         gridArea,
         currentOptions.theme.axisLineColor,
         currentOptions.theme.axisTickColor,
-        yTickCount
+        yTickCount,
+        yTickValues.length > 0 ? yTickValues : undefined
       );
     }
     }
@@ -5090,7 +5180,8 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
               cell.cellLocalGridArea,
               currentOptions.theme.axisLineColor,
               currentOptions.theme.axisTickColor,
-              cellXTickCount
+              cellXTickCount,
+              xTickValues.length > 0 ? xTickValues : undefined
             );
           }
           if (cell.drawYAxis) {
@@ -5101,7 +5192,8 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
               cell.cellLocalGridArea,
               currentOptions.theme.axisLineColor,
               currentOptions.theme.axisTickColor,
-              yTickCount
+              yTickCount,
+              yTickValues.length > 0 ? yTickValues : undefined
             );
           }
         }
@@ -5373,7 +5465,8 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
               cell.cellLocalGridArea,
               currentOptions.theme.axisLineColor,
               currentOptions.theme.axisTickColor,
-              cellXTickCount
+              cellXTickCount,
+              xTickValues.length > 0 ? xTickValues : undefined
             );
           }
           if (cell.drawYAxis) {
@@ -5384,7 +5477,8 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
               cell.cellLocalGridArea,
               currentOptions.theme.axisLineColor,
               currentOptions.theme.axisTickColor,
-              yTickCount
+              yTickCount,
+              yTickValues.length > 0 ? yTickValues : undefined
             );
           }
         }
@@ -5619,7 +5713,7 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
             const xTickValues =
               isCategoryXAxis
                 ? (currentOptions.xAxis.data ?? []).map((_: string, idx: number) => idx)
-                : generateLinearTicks(cell.visibleXDomain.min, cell.visibleXDomain.max, facetXTickCount);
+                : generateNiceTicks(cell.visibleXDomain.min, cell.visibleXDomain.max, facetXTickCount);
             const xLabelY = plotBottomCss + xTickLengthCssPx + LABEL_PADDING_CSS_PX + currentOptions.theme.fontSize * 0.5;
             const xTickRotation = currentOptions.xAxis.tickLabelRotation ?? 0;
             for (let t = 0; t < xTickValues.length; t++) {

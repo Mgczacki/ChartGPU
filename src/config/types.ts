@@ -93,6 +93,12 @@ export interface AxisConfig {
    * This option is primarily intended for `yAxis` (it has no effect on `xAxis` currently).
    */
   readonly autoBounds?: 'global' | 'visible';
+  /**
+   * When true, the axis domain is extended to include 0 when it would otherwise be excluded.
+   * Useful for bar charts: if all data is negative, max is extended to 0; if all positive, min is extended to 0.
+   * Explicit `min`/`max` take precedence. Primarily intended for `yAxis`.
+   */
+  readonly includeZero?: boolean;
 }
 
 export interface DataZoomConfig {

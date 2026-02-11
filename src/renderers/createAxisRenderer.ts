@@ -13,7 +13,8 @@ export interface AxisRenderer {
     gridArea: GridArea,
     axisLineColor?: string,
     axisTickColor?: string,
-    tickCount?: number
+    tickCount?: number,
+    tickValues?: readonly number[]
   ): void;
   render(passEncoder: GPURenderPassEncoder): void;
   dispose(): void;
@@ -81,7 +82,8 @@ const generateAxisVertices = (
   scale: LinearScale,
   orientation: 'x' | 'y',
   gridArea: GridArea,
-  tickCountOverride?: number
+  tickCountOverride?: number,
+  tickValuesOverride?: readonly number[]
 ): Float32Array => {
   const { left, right, top, bottom, canvasWidth, canvasHeight } = gridArea;
   // Be resilient: older call sites may omit/incorrectly pass DPR. Defaulting avoids hard crashes.
@@ -113,9 +115,11 @@ const generateAxisVertices = (
     throw new Error('AxisRenderer.prepare: tickLength must be a finite non-negative number.');
   }
 
-  const tickCountRaw = tickCountOverride ?? DEFAULT_TICK_COUNT;
-  const tickCount = Math.max(1, Math.floor(tickCountRaw));
-  if (!Number.isFinite(tickCountRaw) || tickCount < 1) {
+  const useExplicitTicks = tickValuesOverride != null && tickValuesOverride.length > 0;
+  const tickCount = useExplicitTicks
+    ? tickValuesOverride!.length
+    : Math.max(1, Math.floor(tickCountOverride ?? DEFAULT_TICK_COUNT));
+  if (!useExplicitTicks && (!Number.isFinite(tickCountOverride ?? DEFAULT_TICK_COUNT) || tickCount < 1)) {
     throw new Error('AxisRenderer.prepare: tickCount must be a finite number >= 1.');
   }
   const tickLengthDevicePx = tickLengthCssPx * devicePixelRatio;
@@ -137,6 +141,7 @@ const generateAxisVertices = (
   // For category axis, place ticks at indices 0, 1, ..., N-1 so they align with bars and labels.
   const isCategory = axisConfig.type === 'category';
   const tickValueAt = (i: number): number => {
+    if (useExplicitTicks) return tickValuesOverride![i]!;
     if (isCategory) return i;
     const t = tickCount === 1 ? 0.5 : i / (tickCount - 1);
     return domainMin + t * (domainMax - domainMin);
@@ -267,7 +272,8 @@ export function createAxisRenderer(device: GPUDevice, options?: AxisRendererOpti
     gridArea,
     axisLineColor,
     axisTickColor,
-    tickCount
+    tickCount,
+    tickValues
   ) => {
     assertNotDisposed();
 
@@ -275,7 +281,7 @@ export function createAxisRenderer(device: GPUDevice, options?: AxisRendererOpti
       throw new Error("AxisRenderer.prepare: orientation must be 'x' or 'y'.");
     }
 
-    const vertices = generateAxisVertices(axisConfig, scale, orientation, gridArea, tickCount);
+    const vertices = generateAxisVertices(axisConfig, scale, orientation, gridArea, tickCount, tickValues);
     const requiredSize = vertices.byteLength;
     const bufferSize = Math.max(4, requiredSize);
 
