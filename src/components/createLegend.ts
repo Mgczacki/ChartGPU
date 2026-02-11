@@ -4,7 +4,7 @@ import type { ThemeConfig } from '../themes/types';
 export type LegendPosition = 'top' | 'bottom' | 'left' | 'right';
 
 export interface Legend {
-  update(series: ReadonlyArray<SeriesConfig>, theme: ThemeConfig): void;
+  update(series: ReadonlyArray<SeriesConfig>, theme: ThemeConfig, position?: LegendPosition): void;
   dispose(): void;
 }
 
@@ -137,9 +137,15 @@ export function createLegend(
   container.appendChild(root);
 
   let disposed = false;
+  let currentPosition: LegendPosition = position;
 
-  const update: Legend['update'] = (series, theme) => {
+  const update: Legend['update'] = (series, theme, newPosition) => {
     if (disposed) return;
+
+    if (newPosition !== undefined && newPosition !== currentPosition) {
+      currentPosition = newPosition;
+      applyPositionStyles(newPosition);
+    }
 
     root.style.color = theme.textColor;
     root.style.background = theme.backgroundColor;
@@ -150,6 +156,7 @@ export function createLegend(
     const items: HTMLElement[] = [];
     for (let seriesIndex = 0; seriesIndex < series.length; seriesIndex++) {
       const s = series[seriesIndex];
+      if (s.showInLegend === false) continue;
 
       if (s.type === 'pie') {
         for (let sliceIndex = 0; sliceIndex < s.data.length; sliceIndex++) {
@@ -203,6 +210,8 @@ export function createLegend(
     }
 
     list.replaceChildren(...items);
+    // Ocultar el contenedor (y su borde) cuando no hay ítems para evitar caja vacía visible
+    root.style.display = items.length === 0 ? 'none' : '';
   };
 
   const dispose: Legend['dispose'] = () => {

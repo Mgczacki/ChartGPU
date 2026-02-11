@@ -1,0 +1,30 @@
+# ChartGPU npm Package Builder (upload to kuona-npm/@expertai/)
+definitions:
+  steps:
+    - step: &build-and-upload-npm-package
+        name: 'Build and Upload npm Package to S3'
+        image: node:18.7.0-alpine
+        oidc: true
+        script:
+          - apk add git python3 py3-pip
+          - pip3 install awscli boto3
+          - export AWS_REGION=us-east-1
+          - export AWS_ROLE_ARN=$AWS_OIDC_ROLE_ARN
+          - export AWS_WEB_IDENTITY_TOKEN_FILE=$(pwd)/web-identity-token
+          - echo $BITBUCKET_STEP_OIDC_TOKEN > $(pwd)/web-identity-token
+          - export BITBUCKET_TAG=$(git describe --tags)
+          - echo "Building chartgpu for tag $BITBUCKET_TAG"
+          - npm ci
+          - npm run build
+          - npm pack
+          - export TARBALL=$(ls chartgpu-*.tgz)
+          - echo "Uploading $TARBALL to S3..."
+          - aws s3 cp $TARBALL s3://kuona-npm/@expertai/chartgpu-${BITBUCKET_TAG}.tgz
+          - echo "✓ Package available at https://kuona-npm.s3.amazonaws.com/@expertai/chartgpu-${BITBUCKET_TAG}.tgz"
+
+pipelines:
+  tags:
+    v*:
+      - step: *build-and-upload-npm-package
+    t*:
+      - step: *build-and-upload-npm-package

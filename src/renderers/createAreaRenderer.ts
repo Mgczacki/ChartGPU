@@ -11,9 +11,20 @@ export interface AreaRenderer {
     data: ResolvedAreaSeriesConfig['data'],
     xScale: LinearScale,
     yScale: LinearScale,
-    baseline?: number
+    baseline?: number,
+    yDomain?: { min: number; max: number },
+    /** When provided (e.g. facet per-cell buffer), vertex data is written here. */
+    externalBuffer?: GPUBuffer
+  ): number;
+  /** Updates only uniforms for facet cells. Call before render(buffer, vertexCount) in facet loop. */
+  setCellUniforms(
+    xScale: LinearScale,
+    yScale: LinearScale,
+    baseline: number,
+    yDomain: { min: number; max: number } | undefined,
+    seriesConfig: ResolvedAreaSeriesConfig
   ): void;
-  render(passEncoder: GPURenderPassEncoder): void;
+  render(passEncoder: GPURenderPassEncoder, buffer?: GPUBuffer, vertexCount?: number): void;
   dispose(): void;
 }
 
@@ -214,12 +225,20 @@ export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOpti
     writeUniformBuffer(device, vsUniformBuffer, vsUniformScratchBuffer);
   };
 
-  const prepare: AreaRenderer['prepare'] = (seriesConfig, data, xScale, yScale, baseline) => {
+  const prepare: AreaRenderer['prepare'] = (seriesConfig, data, xScale, yScale, baseline, yDomain, externalBuffer) => {
     assertNotDisposed();
 
     const vertices = createAreaVertices(data);
     const requiredSize = vertices.byteLength;
     const bufferSize = Math.max(4, requiredSize);
+    const count = vertices.length / 2;
+
+    if (externalBuffer) {
+      if (vertices.byteLength > 0 && externalBuffer.size >= requiredSize) {
+        device.queue.writeBuffer(externalBuffer, 0, vertices.buffer, 0, vertices.byteLength);
+      }
+      return count;
+    }
 
     if (!vertexBuffer || vertexBuffer.size < bufferSize) {
       if (vertexBuffer) {
@@ -239,11 +258,24 @@ export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOpti
     if (vertices.byteLength > 0) {
       device.queue.writeBuffer(vertexBuffer, 0, vertices.buffer, 0, vertices.byteLength);
     }
-    vertexCount = vertices.length / 2;
+    vertexCount = count;
 
     const { xMin, xMax, yMin, yMax } = computeDataBounds(data);
     const { a: ax, b: bx } = computeClipAffineFromScale(xScale, xMin, xMax);
-    const { a: ay, b: by } = computeClipAffineFromScale(yScale, yMin, yMax);
+    // When yDomain is provided (e.g. facets with shared Y), map [min,max] to [-1,1] directly
+    let ay: number;
+    let by: number;
+    if (yDomain != null && Number.isFinite(yDomain.min) && Number.isFinite(yDomain.max) && yDomain.min !== yDomain.max) {
+      const span = yDomain.max - yDomain.min;
+      ay = 2 / span;
+      by = -1 - ay * yDomain.min;
+    } else {
+      const yDomainMin = yMin;
+      const yDomainMax = yMax;
+      const { a: ayData, b: byData } = computeClipAffineFromScale(yScale, yDomainMin, yDomainMax);
+      ay = ayData;
+      by = byData;
+    }
 
     const baselineValue =
       Number.isFinite(baseline ?? Number.NaN) ? (baseline as number) : Number.isFinite(yMin) ? yMin : 0;
@@ -258,16 +290,48 @@ export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOpti
     fsUniformScratchF32[2] = b;
     fsUniformScratchF32[3] = clamp01(a * opacity);
     writeUniformBuffer(device, fsUniformBuffer, fsUniformScratchF32);
+    return count;
   };
 
-  const render: AreaRenderer['render'] = (passEncoder) => {
+  const setCellUniforms: AreaRenderer['setCellUniforms'] = (xScale, yScale, baseline, yDomain, seriesConfig) => {
     assertNotDisposed();
-    if (!vertexBuffer || vertexCount < 4) return;
+    const xMin = xScale.invert(-1);
+    const xMax = xScale.invert(1);
+    const yMin = yScale.invert(-1);
+    const yMax = yScale.invert(1);
+    const { a: ax, b: bx } = computeClipAffineFromScale(xScale, xMin, xMax);
+    let ay: number;
+    let by: number;
+    if (yDomain != null && Number.isFinite(yDomain.min) && Number.isFinite(yDomain.max) && yDomain.min !== yDomain.max) {
+      const span = yDomain.max - yDomain.min;
+      ay = 2 / span;
+      by = -1 - ay * yDomain.min;
+    } else {
+      const { a: ayData, b: byData } = computeClipAffineFromScale(yScale, yMin, yMax);
+      ay = ayData;
+      by = byData;
+    }
+    const baselineValue = Number.isFinite(baseline) ? baseline : 0;
+    writeVsUniforms(ax, bx, ay, by, baselineValue);
+    const [r, g, b, a] = parseSeriesColorToRgba01(seriesConfig.areaStyle.color);
+    const opacity = clamp01(seriesConfig.areaStyle.opacity);
+    fsUniformScratchF32[0] = r;
+    fsUniformScratchF32[1] = g;
+    fsUniformScratchF32[2] = b;
+    fsUniformScratchF32[3] = clamp01(a * opacity);
+    writeUniformBuffer(device, fsUniformBuffer, fsUniformScratchF32);
+  };
+
+  const render: AreaRenderer['render'] = (passEncoder, buffer, vertexCountOverride) => {
+    assertNotDisposed();
+    const drawBuffer = buffer ?? vertexBuffer;
+    const drawCount = vertexCountOverride ?? vertexCount;
+    if (!drawBuffer || drawCount < 4) return;
 
     passEncoder.setPipeline(pipeline);
     passEncoder.setBindGroup(0, bindGroup);
-    passEncoder.setVertexBuffer(0, vertexBuffer);
-    passEncoder.draw(vertexCount);
+    passEncoder.setVertexBuffer(0, drawBuffer);
+    passEncoder.draw(drawCount);
   };
 
   const dispose: AreaRenderer['dispose'] = () => {
@@ -296,6 +360,6 @@ export function createAreaRenderer(device: GPUDevice, options?: AreaRendererOpti
     }
   };
 
-  return { prepare, render, dispose };
+  return { prepare, setCellUniforms, render, dispose };
 }
 

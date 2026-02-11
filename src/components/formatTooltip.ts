@@ -57,9 +57,13 @@ function sanitizeCssColor(value: string): string {
 }
 
 function isCandlestickValue(
-  value: readonly [number, number] | readonly [number, number, number, number, number],
+  value: TooltipParams['value'],
 ): value is readonly [number, number, number, number, number] {
   return value.length === 5;
+}
+
+function isHeatmapValue(value: TooltipParams['value']): value is readonly [number, number, number] {
+  return value.length === 3;
 }
 
 function formatPercentChange(open: number, close: number): string {
@@ -143,10 +147,14 @@ export function formatCandlestickTooltip(params: TooltipParams): string {
  * Default tooltip formatter for item mode.
  * Returns a compact single-row HTML snippet: dot + series name + y value.
  * For candlestick series, returns O/H/L/C with arrow and percentage change.
+ * For heatmap series, shows the cell value (used for coloring) instead of y.
  */
 export function formatTooltipItem(params: TooltipParams): string {
   if (isCandlestickValue(params.value)) {
     return formatCandlestickTooltip(params);
+  }
+  if (isHeatmapValue(params.value)) {
+    return formatRowHtml(params, formatNumber(params.value[2]));
   }
   return formatRowHtml(params, formatNumber(params.value[1]));
 }
@@ -168,6 +176,9 @@ export function formatTooltipAxis(params: TooltipParams[]): string {
     .map((p) => {
       if (isCandlestickValue(p.value)) {
         return formatCandlestickRowHtml(p);
+      }
+      if (isHeatmapValue(p.value)) {
+        return formatRowHtml(p, formatNumber(p.value[2]));
       }
       return formatRowHtml(p, formatNumber(p.value[1]));
     })

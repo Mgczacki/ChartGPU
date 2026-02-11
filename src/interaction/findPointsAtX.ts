@@ -50,6 +50,8 @@ type BarHitTestLayout = Readonly<{
   gap: number;
   /** total cluster width (all bar slots), in xScale range units */
   clusterWidth: number;
+  /** max bars at any category; when 1, all bars use slot 0 for full width */
+  effectiveClusterCount: number;
   /** maps global series index -> cluster slot index */
   clusterIndexByGlobalSeriesIndex: ReadonlyMap<number, number>;
 }>;
@@ -64,6 +66,10 @@ const computeBarHitTestLayout = (
   for (let i = 0; i < series.length; i++) {
     const s = series[i];
     if (s?.type === 'bar') barSeries.push({ globalSeriesIndex: i, s });
+    else if (s?.type === 'histogram' && Array.isArray(s.data) && s.data.length > 0) {
+      const h = s as { name?: string; color?: string; data: ReadonlyArray<{ x: number; y: number }> };
+      barSeries.push({ globalSeriesIndex: i, s: { type: 'bar', name: h.name ?? 'Count', color: h.color ?? '#6bcf7f', data: h.data, rawData: h.data, sampling: 'none', samplingThreshold: 0 } });
+    }
   }
   if (barSeries.length === 0) return null;
 
@@ -88,6 +94,7 @@ const computeBarHitTestLayout = (
     barWidth: barWidthRange,
     gap,
     clusterWidth,
+    effectiveClusterCount: layout.effectiveClusterCount,
     clusterIndexByGlobalSeriesIndex,
   };
 };
@@ -156,6 +163,7 @@ export function findPointsAtX(
   const maxDxSq = maxDx * maxDx;
 
   const xTarget = xScale.invert(xValue);
+  console.log('[DEBUG facet] findPointsAtX:', { xValue, xTarget });
   if (!Number.isFinite(xTarget)) return [];
 
   const matches: PointsAtXMatch[] = [];
@@ -173,14 +181,16 @@ export function findPointsAtX(
     const first = data[0];
     const isTuple = Array.isArray(first);
 
-    // Bar series: return the correct bar dataIndex for xValue when inside the bar interval.
+    // Bar and histogram series: return the correct bar dataIndex for xValue when inside the bar interval.
     // When tolerance is finite: require an (expanded) interval hit.
     // When tolerance is non-finite: attempt exact hit, otherwise fall back to nearest-x behavior below.
-    if (seriesConfig.type === 'bar' && barLayout) {
+    if ((seriesConfig.type === 'bar' || seriesConfig.type === 'histogram') && barLayout) {
       const clusterIndex = barLayout.clusterIndexByGlobalSeriesIndex.get(s);
       if (clusterIndex !== undefined) {
-        const { barWidth, gap, clusterWidth } = barLayout;
-        const offsetLeftFromCategoryCenter = -clusterWidth / 2 + clusterIndex * (barWidth + gap);
+        const { barWidth, gap, clusterWidth, effectiveClusterCount } = barLayout;
+        const effectiveClusterIndex =
+          effectiveClusterCount <= 1 ? 0 : Math.min(clusterIndex, effectiveClusterCount - 1);
+        const offsetLeftFromCategoryCenter = -clusterWidth / 2 + effectiveClusterIndex * (barWidth + gap);
 
         const hitTol =
           tolerance === undefined || !Number.isFinite(tolerance) ? 0 : Math.max(0, tolerance);

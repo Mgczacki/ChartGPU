@@ -14,6 +14,10 @@ See [`types.ts`](../../src/config/types.ts) for the full type definition.
 
 - **`DataPoint`**: a series data point is either a tuple (`readonly [x, y, size?]`) or an object (`Readonly<{ x, y, size? }>`). See [`types.ts`](../../src/config/types.ts).
 
+**Color by category (colorBy):**
+
+- **`ChartGPUOptions.colorBy?: string`**: when set, cartesian series (line, area, bar, scatter) whose data points are **objects** that include this property are expanded into **one series per unique category value**, each assigned a color from the theme palette. Points must be in object form with `x`, `y`, and the key given by `colorBy` (e.g. `{ x: 1, y: 2, region: 'Norte' }` with `colorBy: 'region'`). Category order is first appearance in the data. Does not apply to heatmap, pie, candlestick, or histogram. Facet keys (`fx`, `fy`) on points are preserved when expanding. See [`OptionResolver.ts`](../../src/config/OptionResolver.ts) (`expandSeriesByColorBy`).
+
 **Auto-scroll (streaming):**
 
 - **`ChartGPUOptions.autoScroll?: boolean`**: when `true`, calls to `ChartGPUInstance.appendData(...)` may automatically keep the visible x-range "anchored" to the newest data **only when x-axis data zoom is enabled** (i.e. there is a percent-space zoom window `{ start, end }` in \([0, 100]\)) and `xAxis.min`/`xAxis.max` are not set. Default: `false` (see [`defaults.ts`](../../src/config/defaults.ts)).
@@ -33,7 +37,7 @@ See [`types.ts`](../../src/config/types.ts) for the full type definition.
 ## Series Configuration
 
 - **`SeriesType`**: `'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'candlestick'`. See [`types.ts`](../../src/config/types.ts).
-- **`SeriesConfig`**: `LineSeriesConfig | AreaSeriesConfig | BarSeriesConfig | ScatterSeriesConfig | PieSeriesConfig | CandlestickSeriesConfig` (discriminated by `series.type`). See [`types.ts`](../../src/config/types.ts).
+- **`SeriesConfig`**: `LineSeriesConfig | AreaSeriesConfig | BarSeriesConfig | ScatterSeriesConfig | HeatmapSeriesConfig | PieSeriesConfig | CandlestickSeriesConfig | HistogramSeriesConfig` (discriminated by `series.type`). See [`types.ts`](../../src/config/types.ts).
 - **Sampling (cartesian series only)**: cartesian series support optional `sampling?: 'none' | 'lttb' | 'average' | 'max' | 'min'` and optional `samplingThreshold?: number` (applied when the input series data length exceeds the threshold). When omitted, defaults are `sampling: 'lttb'` and `samplingThreshold: 5000` via [`resolveOptions`](../../src/config/OptionResolver.ts) and baseline defaults in [`defaults.ts`](../../src/config/defaults.ts). Sampling affects rendering and cartesian hit-testing only; axis auto-bounds are derived from raw (unsampled) series data unless you set `xAxis.min`/`xAxis.max` or `yAxis.min`/`yAxis.max` (see [`createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts)). When x-axis data zoom is enabled, sampling is re-applied against the **visible x-range** (from the percent-space zoom window in \([0, 100]\)) using raw data; visible-range slicing is applied **immediately** during zoom/pan for smooth visual feedback, while full resampling is **debounced (~100ms)** for performance; a ±10% buffer zone reduces resampling frequency during small pans (see [`createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts)). Pie series (`type: 'pie'`) do not support these fields (pie is non-cartesian).
 
 ### CandlestickSeriesConfig
@@ -55,6 +59,7 @@ Extends shared series fields with `type: 'candlestick'` and OHLC-specific config
 Extends the shared series fields with `type: 'line'`, optional `lineStyle?: LineStyleConfig`, and optional `areaStyle?: AreaStyleConfig`.
 
 - When a line series includes `areaStyle`, ChartGPU renders a filled area behind the line (area fills then line strokes). See [`createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts).
+- **`marker?: boolean | { show?: boolean; symbolSize?: number }`**: when `true` or an object with `show: true`, ChartGPU draws a marker at each data point using the series color. Object form allows `symbolSize` in CSS pixels (default `4`). When `false` or omitted, no markers are drawn.
 
 ### AreaSeriesConfig
 
@@ -62,6 +67,7 @@ Extends the shared series fields with `type: 'area'`, optional `baseline?: numbe
 
 - **`baseline`** is a data-space "filled area floor". If omitted, ChartGPU defaults it to the y-axis minimum.
 - **`areaStyle.opacity`** controls the fill opacity.
+- **`marker?: boolean | { show?: boolean; symbolSize?: number }`**: when `true` or an object with `show: true`, ChartGPU draws a marker at each data point using the series color. Object form allows `symbolSize` in CSS pixels (default `4`). When `false` or omitted, no markers are drawn.
 
 ### BarSeriesConfig
 
@@ -79,6 +85,16 @@ Extends the shared series fields with `type: 'bar'` and bar-specific layout/styl
 - **`itemStyle?: BarItemStyleConfig`**: per-bar styling.
 - **Rendering (current)**: bar series render as clustered bars per x-category via an instanced draw path. If multiple bar series share the same **non-empty** `stack` id, they render as stacked segments within the same cluster slot (positive values stack upward from the baseline; negative values stack downward). Bars are clipped to the plot grid (scissor) so they do not render into the chart margins. See [`createBarRenderer.ts`](../../src/renderers/createBarRenderer.ts), shader source [`bar.wgsl`](../../src/shaders/bar.wgsl), and coordinator wiring in [`createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts). For an example, see [`examples/grouped-bar/`](../../examples/grouped-bar/).
   - Note: y-axis auto bounds are currently derived from raw series y-values (not stacked totals). If stacked bars clip, set `yAxis.min` / `yAxis.max`.
+
+### HistogramSeriesConfig
+
+Extends the shared series fields with `type: 'histogram'`. Bins 1D values and renders them as bars (count per bin). See [`types.ts`](../../src/config/types.ts).
+
+- **`data`**: `ReadonlyArray<number>` (raw values to bin) or `ReadonlyArray<DataPoint>` (uses `y`, or `x` if `y` is missing, as the value to bin). When using facets, use object points with the facet property (e.g. `{ y: value, region: 'Norte' }`).
+- **`binWidth?: number`**: optional fixed bin width in **data units**. If omitted, bin width is computed via the **Freedman-Diaconis** rule: \(h = 2 \cdot \mathrm{IQR} / n^{1/3}\).
+- **Rendering**: histogram series are rendered using the same bar renderer as `type: 'bar'`; the coordinator computes bin edges and counts (from `data`) and passes synthetic bar data (bin center, count) to the bar renderer. The x-axis should be `type: 'value'` so bin centers scale correctly.
+- **Facets**: histogram supports faceting when `data` is provided as `DataPoint[]` with facet keys; each panel shows the histogram of the filtered subset. See [`createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts) and [`utils/histogramBins.ts`](../../src/utils/histogramBins.ts).
+- **Example**: see [`examples/histogram/`](../../examples/histogram/).
 
 ### ScatterSeriesConfig
 
@@ -135,6 +151,7 @@ Bar styling options. See [`types.ts`](../../src/config/types.ts).
     - **`'visible'` (default)**: when x-axis data zoom is active, ChartGPU derives y-bounds from the **visible** (zoomed) x-range.
     - **`'global'`**: derive y-bounds from the **full dataset** (pre-zoom behavior), even while x-zoomed.
   - This option is intended for `yAxis` (it has no effect on `xAxis`).
+- **`AxisConfig.includeZero?: boolean`**: when `true`, the axis domain is extended to include 0 when it would otherwise be excluded. Useful for bar charts: if all data is negative, `max` is extended to 0 (0 appears at the top of the plot); if all data is positive, `min` is extended to 0 (0 appears at the bottom). Explicit `min`/`max` take precedence. Primarily intended for `yAxis`. See [`types.ts`](../../src/config/types.ts) and [`createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts).
 - **`xAxis.type: 'time'` (timestamps)**: when `xAxis.type === 'time'`, x-values are interpreted as **timestamps in milliseconds since Unix epoch** (the same unit accepted by `new Date(ms)`), including candlestick `timestamp` values. For GPU precision, ChartGPU may internally **rebase** large time x-values (e.g. epoch-ms domains) before uploading to Float32 vertex buffers; this is automatic and does not change your units. See the runtime axis label/tick logic in [`createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts).
 - **Time x-axis tick labels (automatic tiers)**: when `xAxis.type === 'time'`, x-axis tick labels are formatted based on the **current visible x-range** (after data zoom):
 
@@ -149,6 +166,9 @@ Bar styling options. See [`types.ts`](../../src/config/types.ts).
   Notes: month/year thresholds are **approximate** (30d / 365d), and formatting uses the browser's `Date` semantics (local timezone). See [`createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts).
 - **Adaptive tick count (overlap avoidance, time x-axis only)**: when `xAxis.type === 'time'`, ChartGPU may **vary the tick count per render** to avoid DOM label overlap. It picks the largest tick count in **\[1, 9]** whose measured labels do not overlap (minimum gap **6 CSS px**); if measurement isn't available it falls back to the default tick count. **GPU tick marks and DOM tick labels use the same computed tick count.** See [`createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts) and [`createAxisRenderer.ts`](../../src/renderers/createAxisRenderer.ts).
 - **`AxisConfig.name?: string`**: renders an axis title for cartesian charts when provided (and non-empty after `trim()`): x-axis titles are centered below x-axis tick labels, and y-axis titles are rotated \(-90°\) and placed left of y-axis tick labels; titles can be clipped if `grid.bottom` / `grid.left` margins are too small. When `dataZoom` includes a slider (see below), ChartGPU reserves extra bottom space so the x-axis title remains visible above the slider overlay and is centered within the remaining space above the slider track. See [`createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts) and option resolution in [`OptionResolver.ts`](../../src/config/OptionResolver.ts).
+- **`AxisConfig.tickLabelRotation?: number`**: rotation of axis tick labels in **degrees** (CSS `rotate`). Default: `0`. Useful on the x-axis to avoid overlap with long category names (e.g. `-45` or `45`). When non-zero and `xAxis.type === 'category'`, ChartGPU may auto-increase the bottom margin to fit rotated labels. See [`types.ts`](../../src/config/types.ts) and [`createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts).
+- **`AxisConfig.splitNumber?: number`**: approximate number of axis segments/ticks. Applies to `value` and `time` axes only. For `xAxis.type === 'time'`, when set, disables the adaptive tick algorithm and fixes the tick count. For `xAxis.type === 'category'` this is ignored (all categories are always shown). Values are clamped to [1, 20]. See [`types.ts`](../../src/config/types.ts) and [`createRenderCoordinator.ts`](../../src/core/createRenderCoordinator.ts).
+- **`AxisConfig.titleOffset?: readonly [dx: number, dy: number]`**: offset for the axis **title** (name) only, in **CSS pixels** `[dx, dy]`. Does not affect tick labels. Useful to shift the x-axis title down when using rotated tick labels, or to fine-tune title position. See [`types.ts`](../../src/config/types.ts).
 - **Axis title styling**: titles are rendered via the internal DOM text overlay and use the resolved theme's `textColor` and `fontFamily` with slightly larger, bold text (label elements also set `dir='auto'`).
 
 ## Data Zoom Configuration
@@ -176,6 +196,18 @@ Bar styling options. See [`types.ts`](../../src/config/types.ts).
   - **`end?: number`**: end percent in \([0, 100]\)
   - **`minSpan?: number`**
   - **`maxSpan?: number`**
+
+## Facet configuration
+
+- **`ChartGPUOptions.facet?: FacetConfig`**: optional faceting to split the chart into **multiple panels** (small multiples) by the value of a column present on each data point. See [`types.ts`](../../src/config/types.ts) and [`FacetConfig`](../../src/config/types.ts).
+  - **`FacetConfig.fx?: string`**: **column name** for **horizontal** faceting. One panel per unique value of this column, laid out in **columns**. All panels **share the same y-axis** (same y-domain). Omit or leave empty to disable horizontal faceting.
+  - **`FacetConfig.fy?: string`**: **column name** for **vertical** faceting. One panel per unique value of this column, laid out in **rows**. All panels **share the same x-axis** (same x-domain). Omit or leave empty to disable vertical faceting.
+  - **`FacetConfig.gap?: number`**: **gap** between facet cells in CSS pixels (horizontal and vertical). Default: `8`.
+  - **`FacetConfig.labelRotation?: number`**: **rotation** of facet labels (fx and fy) in degrees (CSS rotate). Default: `0`.
+  - **Data contract**: when `facet` is set, each point in `series[].data` must be an **object** (not a tuple) that includes the facet property. For example with `facet: { fx: 'region' }`, each point must have a `region` property: `{ x: 1, y: 10, region: 'Norte' }`. The coordinator filters points per panel using `point[options.facet.fx]` and/or `point[options.facet.fy]`. **Facetable series**: line, area, bar, scatter, histogram. Non-facetable series (pie, heatmap, candlestick) are not split and are omitted from facet panels.
+  - **Layout**: panels are arranged in a grid with a small gap between cells. Shared axes are drawn only once (y-axis on the first column when `fx` is used; x-axis on the last row when `fy` is used). Optional facet labels (value of the column) can be shown above each panel.
+  - **Interaction**: tooltip, crosshair, and hover highlight use the panel under the pointer and that panel’s series and scales.
+  - **Example**: see [`examples/facet/`](../../examples/facet/) for a bar chart faceted by `region` with `facet: { fx: 'region' }`.
 
 ## Tooltip Configuration
 

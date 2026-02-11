@@ -280,6 +280,8 @@ export type BarLayoutPx = Readonly<{
   barWidthPx: number;
   gapPx: number;
   clusterWidthPx: number;
+  /** Max bars at any single category; used so one-bar-per-category gets full width. */
+  effectiveClusterCount: number;
   clusterSlots: BarClusterSlots;
 }>;
 
@@ -288,7 +290,20 @@ export function computeBarLayoutPx(
   xScale: LinearScale,
 ): BarLayoutPx {
   const clusterSlots = computeBarClusterSlots(seriesConfigs);
-  const clusterCount = clusterSlots.clusterCount;
+
+  const barsPerCategory = new Map<number, number>();
+  for (let s = 0; s < seriesConfigs.length; s++) {
+    for (let i = 0; i < seriesConfigs[s].data.length; i++) {
+      const x = getPointXY(seriesConfigs[s].data[i]).x;
+      const key = Number.isFinite(x) ? x : NaN;
+      barsPerCategory.set(key, (barsPerCategory.get(key) ?? 0) + 1);
+    }
+  }
+  let maxBarsAtAnyCategory = 0;
+  for (const n of barsPerCategory.values()) {
+    if (n > maxBarsAtAnyCategory) maxBarsAtAnyCategory = n;
+  }
+  const effectiveClusterCount = Math.max(1, maxBarsAtAnyCategory);
 
   const categoryStep = computeBarCategoryStep(seriesConfigs);
   const categoryWidthPx = computeCategoryWidthPx(seriesConfigs, xScale, categoryStep);
@@ -298,7 +313,7 @@ export function computeBarLayoutPx(
   const barCategoryGap = clamp01(layout.barCategoryGap ?? DEFAULT_BAR_CATEGORY_GAP);
 
   const categoryInnerWidthPx = Math.max(0, categoryWidthPx * (1 - barCategoryGap));
-  const denom = clusterCount + Math.max(0, clusterCount - 1) * barGap;
+  const denom = effectiveClusterCount + Math.max(0, effectiveClusterCount - 1) * barGap;
   const maxBarWidthPx = denom > 0 ? categoryInnerWidthPx / denom : 0;
 
   let barWidthPx = 0;
@@ -312,12 +327,11 @@ export function computeBarLayoutPx(
   }
 
   if (!(barWidthPx > 0)) {
-    // Auto-width: max per-bar width that still avoids overlap (given clusterCount and barGap).
     barWidthPx = maxBarWidthPx;
   }
 
   const gapPx = barWidthPx * barGap;
-  const clusterWidthPx = clusterCount * barWidthPx + Math.max(0, clusterCount - 1) * gapPx;
+  const clusterWidthPx = effectiveClusterCount * barWidthPx + Math.max(0, effectiveClusterCount - 1) * gapPx;
 
   return {
     categoryStep,
@@ -325,6 +339,7 @@ export function computeBarLayoutPx(
     barWidthPx,
     gapPx,
     clusterWidthPx,
+    effectiveClusterCount,
     clusterSlots,
   };
 }
@@ -508,6 +523,10 @@ export function findNearestPoint(
     if (cfg?.type === 'bar') {
       barSeriesConfigs.push(cfg);
       barSeriesIndexByBar.push(s);
+    } else if (cfg?.type === 'histogram' && Array.isArray(cfg.data) && cfg.data.length > 0) {
+      const h = cfg as { name?: string; color?: string; data: ReadonlyArray<{ x: number; y: number }> };
+      barSeriesConfigs.push({ type: 'bar', name: h.name ?? 'Count', color: h.color ?? '#6bcf7f', data: h.data, rawData: h.data, sampling: 'none', samplingThreshold: 0 });
+      barSeriesIndexByBar.push(s);
     }
   }
 
@@ -517,7 +536,7 @@ export function findNearestPoint(
       const plotHeightPx = inferPlotHeightPxForBarHitTesting(barSeriesConfigs, yScale);
       const { baselineDomain, baselinePx } = computeBaselineDomainAndPx(barSeriesConfigs, yScale, plotHeightPx);
 
-      const { clusterSlots, barWidthPx, gapPx, clusterWidthPx, categoryWidthPx, categoryStep } = layoutPx;
+      const { clusterSlots, barWidthPx, gapPx, clusterWidthPx, categoryWidthPx, categoryStep, effectiveClusterCount } = layoutPx;
       const stackSumsByStackId = new Map<string, Map<number, { posSum: number; negSum: number }>>();
 
       let bestBarHit:
@@ -535,6 +554,8 @@ export function findNearestPoint(
 
         const data = seriesCfg.data;
         const clusterIndex = clusterSlots.clusterIndexBySeries[b] ?? 0;
+        const effectiveClusterIndex =
+          effectiveClusterCount <= 1 ? 0 : Math.min(clusterIndex, effectiveClusterCount - 1);
         const stackId = clusterSlots.stackIdBySeries[b] ?? '';
 
         for (let i = 0; i < data.length; i++) {
@@ -544,7 +565,7 @@ export function findNearestPoint(
           const xCenterPx = xScale.scale(xDomain);
           if (!Number.isFinite(xCenterPx)) continue;
 
-          const left = xCenterPx - clusterWidthPx / 2 + clusterIndex * (barWidthPx + gapPx);
+          const left = xCenterPx - clusterWidthPx / 2 + effectiveClusterIndex * (barWidthPx + gapPx);
           const right = left + barWidthPx;
 
           let baseDomain = baselineDomain;

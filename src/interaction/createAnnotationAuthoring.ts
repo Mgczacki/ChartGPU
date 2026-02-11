@@ -371,7 +371,7 @@ export function createAnnotationAuthoring(
       let dataXMax = Number.NEGATIVE_INFINITY;
 
       for (const s of series) {
-        if (s.type === 'pie') continue;
+        if (s.type === 'pie' || s.type === 'histogram') continue;
 
         if (s.type === 'candlestick') {
           // Candlestick uses timestamp (first element)
@@ -423,7 +423,7 @@ export function createAnnotationAuthoring(
       let dataYMax = Number.NEGATIVE_INFINITY;
 
       for (const s of series) {
-        if (s.type === 'pie') continue;
+        if (s.type === 'pie' || s.type === 'histogram') continue;
 
         if (s.type === 'candlestick') {
           // Candlestick uses low/high

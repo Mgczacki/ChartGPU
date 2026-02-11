@@ -45,6 +45,6 @@ export default defineConfig({
     }
   },
   server: {
-    open: '/examples'
+    open: '/examples/'
   }
 });
