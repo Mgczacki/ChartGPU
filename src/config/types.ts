@@ -319,6 +319,10 @@ export interface HistogramSeriesConfig extends Omit<SeriesConfigBase, 'data'> {
    * Bin width in data units. If omitted, bin width is computed via Freedman-Diaconis.
    */
   readonly binWidth?: number;
+  /** Bar width for rendered bins (same as bar series). */
+  readonly barWidth?: number | string;
+  /** Gap between bins (same as bar series barCategoryGap). */
+  readonly barCategoryGap?: number;
 }
 
 export type SeriesConfig =

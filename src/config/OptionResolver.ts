@@ -1126,7 +1126,7 @@ export function resolveOptions(userOptions: ChartGPUOptions = {}): ResolvedChart
           type: 'histogram',
           name: s.name,
           color,
-          showInLegend: s.showInLegend,
+          showInLegend: (s as HistogramSeriesConfig).showInLegend ?? false,
           rawData: rawValues,
           rawDataPoints,
           binWidth,
