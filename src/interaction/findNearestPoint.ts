@@ -523,6 +523,10 @@ export function findNearestPoint(
     if (cfg?.type === 'bar') {
       barSeriesConfigs.push(cfg);
       barSeriesIndexByBar.push(s);
+    } else if (cfg?.type === 'histogram' && Array.isArray(cfg.data) && cfg.data.length > 0) {
+      const h = cfg as { name?: string; color?: string; data: ReadonlyArray<{ x: number; y: number }> };
+      barSeriesConfigs.push({ type: 'bar', name: h.name ?? 'Count', color: h.color ?? '#6bcf7f', data: h.data, rawData: h.data, sampling: 'none', samplingThreshold: 0 });
+      barSeriesIndexByBar.push(s);
     }
   }
 

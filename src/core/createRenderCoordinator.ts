@@ -6,6 +6,7 @@ import type {
   ResolvedHistogramSeriesConfig,
   ResolvedPieSeriesConfig,
   ResolvedScatterSeriesConfig,
+  ResolvedSeriesConfig,
 } from '../config/OptionResolver';
 import type {
   AnimationConfig,
@@ -4031,6 +4032,8 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
       gridArea: GridArea;
       /** GridArea for bar renderer so NDC -1..1 maps to the cell when viewport is set to the cell. */
       cellLocalGridArea: GridArea;
+      /** Series for tooltip/interaction; histogram is converted to bar so hit-testing works. */
+      seriesForInteraction?: ResolvedChartGPUOptions['series'];
       series: ResolvedChartGPUOptions['series'];
       xScale: ReturnType<typeof createLinearScale>;
       yScale: ReturnType<typeof createLinearScale>;
@@ -4124,10 +4127,12 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
             }
           }
           const cellBarSeriesConfigs: ResolvedBarSeriesConfig[] = [];
+          const cellSeriesForInteraction: ResolvedSeriesConfig[] = [];
           for (let i = 0; i < cellSeries.length; i++) {
             const s = cellSeries[i];
             if (s?.type === 'bar') {
               cellBarSeriesConfigs.push(s);
+              cellSeriesForInteraction.push(s);
             } else if (s?.type === 'histogram') {
               const h = s as ResolvedHistogramSeriesConfig;
               const points = s.data as ReadonlyArray<DataPoint> | undefined;
@@ -4149,7 +4154,7 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
                 const right = binEdges[k + 1]!;
                 barData.push({ x: (left + right) / 2, y: counts[k]! });
               }
-              cellBarSeriesConfigs.push({
+              const syntheticBar: ResolvedBarSeriesConfig = {
                 type: 'bar',
                 name: h.name,
                 color: h.color,
@@ -4157,13 +4162,20 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
                 rawData: barData,
                 sampling: 'none',
                 samplingThreshold: 0,
-              });
+                ...(h.barWidth != null && { barWidth: h.barWidth }),
+                ...(h.barCategoryGap != null && { barCategoryGap: h.barCategoryGap }),
+              };
+              cellBarSeriesConfigs.push(syntheticBar);
+              cellSeriesForInteraction.push(syntheticBar);
+            } else {
+              cellSeriesForInteraction.push(s);
             }
           }
           facetCells.push({
             gridArea: cellGridArea,
             cellLocalGridArea,
             series: cellSeries,
+            seriesForInteraction: cellSeriesForInteraction,
             xScale: cellXScale,
             yScale: cellYScale,
             yDomain: cellYDomain,
@@ -4190,22 +4202,10 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
         yDomain: facetCell.yDomain,
       }, true);
       lastInteractionScales = interactionScalesForInteraction;
-      // Diagnostic: facet cell domains come from filterSeriesForFacetCell + computeGlobalBounds(cellSeries) or shared visibleXDomain/yBaseDomain (see facet cell build ~3870-3956).
-      console.log('[DEBUG facet] interaction scales for cell:', {
-        facetCellIndex: pointerState.facetCellIndex,
-        gridX: pointerState.gridX,
-        gridY: pointerState.gridY,
-        xDomain: facetCell.visibleXDomain,
-        yDomain: facetCell.yDomain,
-        plotWidthCss: interactionScalesForInteraction?.plotWidthCss,
-        plotHeightCss: interactionScalesForInteraction?.plotHeightCss,
-        xScaleRange: interactionScalesForInteraction ? [0, interactionScalesForInteraction.plotWidthCss] : undefined,
-        seriesCount: facetCell.series.length,
-      });
     }
     const seriesForInteraction =
       facetLayout && pointerState.facetCellIndex != null && facetCells[pointerState.facetCellIndex]
-        ? facetCells[pointerState.facetCellIndex].series
+        ? (facetCells[pointerState.facetCellIndex].seriesForInteraction ?? facetCells[pointerState.facetCellIndex].series)
         : seriesForRender;
     const pointerGridArea =
       facetLayout && pointerState.facetCellIndex != null && facetCells[pointerState.facetCellIndex]
@@ -4731,14 +4731,17 @@ fn fsMain(@builtin(position) pos: vec4f) -> @location(0) vec4f {
           break;
         }
         case 'histogram': {
+          const h = s as ResolvedHistogramSeriesConfig;
           const syntheticBar: ResolvedBarSeriesConfig = {
             type: 'bar',
-            name: s.name,
-            color: s.color,
-            data: s.data,
-            rawData: s.data,
+            name: h.name,
+            color: h.color,
+            data: h.data,
+            rawData: h.data,
             sampling: 'none',
             samplingThreshold: 0,
+            ...(h.barWidth != null && { barWidth: h.barWidth }),
+            ...(h.barCategoryGap != null && { barCategoryGap: h.barCategoryGap }),
           };
           barSeriesConfigs.push(syntheticBar);
           break;
